@@ -1,11 +1,14 @@
-// ═══════════════════════════════════════════
-// StarCraft Web - Vue3 应用入口
-// 初始化游戏引擎、UI、事件总线，挂载到 #app
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════════════
+// StarCraft Web - 主入口文件
+// 初始化游戏引擎 + Vue3 UI层
+// ═══════════════════════════════════════════════
 
-import { createApp, reactive, ref } from 'vue';
+import { createApp } from 'vue';
+import App from './ui/App.vue';
 import { eventBus } from './shared/EventBus.js';
 import { GAME, EVENTS, RACE } from './shared/Constants.js';
+
+// 导入游戏引擎模块
 import GameManager from './game/GameManager.js';
 import ResourceManager from './game/ResourceManager.js';
 import Selection from './game/Selection.js';
@@ -14,116 +17,55 @@ import CombatSystem from './game/CombatSystem.js';
 import TechTree from './game/TechTree.js';
 import BuildingSystem from './game/BuildingSystem.js';
 
-// ─── Vue3 应用实例 ────────────────────────
-const app = createApp({
-  setup() {
-    // ─── 响应式游戏状态（供UI层绑定） ───
-    const gameState = reactive({
-      running: false,
-      paused: false,
-      playerRace: RACE.TERRAN,
-      // 资源面板数据
-      resources: {
-        1: { minerals: GAME.STARTING_MINERALS, gas: GAME.STARTING_GAS, supply: 0, supplyMax: 10 },
-        2: { minerals: GAME.STARTING_MINERALS, gas: GAME.STARTING_GAS, supply: 0, supplyMax: 10 },
-      },
-      // 选中单位信息
-      selectedUnits: [],
-      // 游戏时间
-      gameTime: 0,
-      fps: 0,
-    });
+// 导入全局样式
+import './ui/styles/game.css';
 
-    // ─── 创建游戏管理器实例 ──────────────
-    const gameManager = new GameManager();
-    gameManager.gameState = gameState;
+// ─── 创建Vue3应用实例 ──────────────────────
+const app = createApp(App);
 
-    // ─── 注册事件监听，同步游戏状态到UI ──
-    eventBus.on(EVENTS.RESOURCE_CHANGED, (data) => {
-      if (gameState.resources[data.team]) {
-        gameState.resources[data.team] = { ...data.resources };
-      }
-    });
+// ─── 挂载到 #app ───────────────────────────
+app.mount('#app');
 
-    eventBus.on(EVENTS.SELECT_UNITS, (units) => {
-      gameState.selectedUnits = units.map(u => ({
-        id: u.id,
-        type: u.type,
-        name: u.name,
-        hp: u.hp,
-        maxHp: u.maxHp,
-        shield: u.shield,
-        maxShield: u.maxShield,
-        team: u.team,
-      }));
-    });
+// ─── 初始化游戏管理器 ──────────────────────
+const gameManager = new GameManager();
 
-    eventBus.on(EVENTS.DESELECT, () => {
-      gameState.selectedUnits = [];
-    });
-
-    eventBus.on(EVENTS.TICK, (tickData) => {
-      gameState.gameTime = tickData.time;
-      gameState.fps = tickData.fps;
-    });
-
-    eventBus.on(EVENTS.GAME_START, () => {
-      gameState.running = true;
-      gameState.paused = false;
-    });
-
-    eventBus.on(EVENTS.GAME_PAUSE, () => {
-      gameState.paused = true;
-    });
-
-    eventBus.on(EVENTS.GAME_RESUME, () => {
-      gameState.paused = false;
-    });
-
-    // ─── 游戏启动方法 ────────────────────
-    const startGame = (canvas, race = RACE.TERRAN) => {
-      gameState.playerRace = race;
-      gameManager.init(canvas, race);
-      gameManager.start();
-    };
-
-    // ─── 返回模板数据 ────────────────────
-    return {
-      gameState,
-      startGame,
-      gameManager,
-    };
-  },
-  // ─── 模板：游戏画布 + HUD overlay ────
-  template: `
-    <div id="game-root" style="width:100vw;height:100vh;position:relative;">
-      <canvas ref="gameCanvas" id="game-canvas"
-        style="width:100%;height:100%;display:block;"></canvas>
-      <div id="game-hud" style="position:absolute;top:0;left:0;width:100%;pointer-events:none;">
-        <!-- 顶部资源栏 -->
-        <div id="resource-bar"
-          style="display:flex;gap:20px;padding:8px 16px;background:rgba(0,0,0,0.7);color:#fff;font-size:14px;pointer-events:auto;">
-          <span>💰 水晶: {{ gameState.resources[1]?.minerals ?? 0 }}</span>
-          <span>🧪 瓦斯: {{ gameState.resources[1]?.gas ?? 0 }}</span>
-          <span>👥 人口: {{ gameState.resources[1]?.supply ?? 0 }}/{{ gameState.resources[1]?.supplyMax ?? 0 }}</span>
-          <span style="margin-left:auto;">⏱ {{ formatTime(gameState.gameTime) }}</span>
-          <span>FPS: {{ gameState.fps }}</span>
-        </div>
-      </div>
-    </div>
-  `,
+// ─── 监听引擎初始化事件 ────────────────────
+// 当UI层的App.vue发出 engine:init 事件时，初始化游戏引擎
+eventBus.on('engine:init', ({ canvas, race }) => {
+  console.log('[Main] Initializing game engine with race:', race);
+  gameManager.init(canvas, race);
+  gameManager.start();
 });
 
-// ─── 格式化游戏时间（tick → 分:秒） ─────
+// ─── 注册事件监听（引擎 → UI同步） ─────────
+// 资源变化同步到UI
+eventBus.on(EVENTS.RESOURCE_CHANGED, (data) => {
+  // 资源变化由UI层的App.vue通过EventBus监听处理
+});
+
+// ─── 格式化时间全局方法 ────────────────────
 app.config.globalProperties.formatTime = (ticks) => {
-  const seconds = Math.floor(ticks / GAME.TICK_RATE);
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
+  const totalSeconds = Math.floor(ticks / GAME.TICK_RATE);
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
   return `${mins}:${String(secs).padStart(2, '0')}`;
 };
 
-// ─── 挂载到 #app ──────────────────────
-app.mount('#app');
+// ─── 全局错误处理 ──────────────────────────
+app.config.errorHandler = (err, instance, info) => {
+  console.error('[Vue Error]', err);
+  console.error('[Component]', instance);
+  console.error('[Info]', info);
+};
 
-// ─── 导出供外部访问 ──────────────────
-export { eventBus, GameManager, ResourceManager, Selection, CommandSystem, CombatSystem, TechTree, BuildingSystem };
+// ─── 导出供外部访问 ────────────────────────
+export {
+  eventBus,
+  GameManager,
+  ResourceManager,
+  Selection,
+  CommandSystem,
+  CombatSystem,
+  TechTree,
+  BuildingSystem,
+};

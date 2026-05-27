@@ -1,0 +1,379 @@
+/* ═══════════════════════════════════════════════
+ * StarCraft Web - 游戏UI全局样式
+ * SC1风格：金属边框、暗色背景、橙色/金色文字
+ * ═══════════════════════════════════════════════ */
+
+/* ─── CSS变量定义 ─────────────────────────── */
+:root {
+  /* 主色调 */
+  --sc-bg-dark: rgba(10, 12, 18, 0.88);
+  --sc-bg-panel: rgba(15, 18, 28, 0.92);
+  --sc-bg-hover: rgba(30, 40, 60, 0.8);
+  --sc-bg-active: rgba(40, 55, 80, 0.9);
+
+  /* 文字颜色 */
+  --sc-text-gold: #d4a843;
+  --sc-text-gold-bright: #f0c050;
+  --sc-text-orange: #e07830;
+  --sc-text-white: #e8e8e8;
+  --sc-text-gray: #888888;
+  --sc-text-dim: #555555;
+
+  /* 资源颜色 */
+  --sc-mineral-blue: #4488ff;
+  --sc-gas-green: #00cc44;
+  --sc-supply-white: #ffffff;
+  --sc-supply-danger: #ff3333;
+  --sc-energy-yellow: #ffcc00;
+
+  /* 状态颜色 */
+  --sc-hp-green: #00cc44;
+  --sc-hp-yellow: #cccc00;
+  --sc-hp-red: #cc2200;
+  --sc-shield-blue: #4488ff;
+
+  /* 边框颜色 */
+  --sc-border-gold: #8b7330;
+  --sc-border-highlight: #c4a040;
+  --sc-border-dim: #333333;
+
+  /* 字体 */
+  --sc-font: 'Courier New', 'Consolas', 'Source Code Pro', monospace;
+  --sc-font-cn: 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
+
+  /* 尺寸 */
+  --sc-minimap-size: 200px;
+  --sc-panel-width: 280px;
+  --sc-hud-padding: 6px;
+}
+
+/* ─── 全局字体设置 ─────────────────────────── */
+* {
+  font-family: var(--sc-font), var(--sc-font-cn);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── SC1风格金属边框面板 ─────────────────── */
+.sc-panel {
+  background: var(--sc-bg-panel);
+  border: 1px solid var(--sc-border-gold);
+  box-shadow:
+    inset 0 0 20px rgba(0, 0, 0, 0.5),
+    0 0 8px rgba(139, 115, 48, 0.3);
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 金属边框顶部高光线 */
+.sc-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--sc-border-gold) 20%,
+    var(--sc-border-highlight) 50%,
+    var(--sc-border-gold) 80%,
+    transparent 100%
+  );
+  z-index: 1;
+}
+
+/* 金属边框底部高光线 */
+.sc-panel::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(139, 115, 48, 0.5) 30%,
+    rgba(139, 115, 48, 0.5) 70%,
+    transparent 100%
+  );
+  z-index: 1;
+}
+
+/* ─── 按钮样式 ─────────────────────────────── */
+.sc-btn {
+  background: linear-gradient(180deg, rgba(40, 50, 70, 0.9), rgba(20, 25, 40, 0.9));
+  border: 1px solid var(--sc-border-gold);
+  color: var(--sc-text-gold);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--sc-font), var(--sc-font-cn);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 按钮悬停效果 */
+.sc-btn:hover {
+  background: linear-gradient(180deg, rgba(60, 75, 100, 0.95), rgba(30, 40, 60, 0.95));
+  border-color: var(--sc-border-highlight);
+  color: var(--sc-text-gold-bright);
+  box-shadow: 0 0 8px rgba(196, 160, 64, 0.3);
+}
+
+/* 按钮按下效果 */
+.sc-btn:active {
+  background: linear-gradient(180deg, rgba(20, 25, 40, 0.95), rgba(40, 50, 70, 0.95));
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
+  transform: translateY(1px);
+}
+
+/* 禁用按钮 */
+.sc-btn:disabled {
+  background: rgba(20, 20, 20, 0.8);
+  border-color: var(--sc-border-dim);
+  color: var(--sc-text-dim);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* ─── 进度条样式 ───────────────────────────── */
+.sc-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(139, 115, 48, 0.4);
+  border-radius: 1px;
+  overflow: hidden;
+  position: relative;
+}
+
+.sc-progress-bar .fill {
+  height: 100%;
+  background: linear-gradient(180deg, #e0a020, #c08010);
+  transition: width 0.3s ease;
+  position: relative;
+}
+
+/* 进度条高光 */
+.sc-progress-bar .fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent);
+}
+
+/* HP条颜色变体 */
+.sc-progress-bar.hp-green .fill {
+  background: linear-gradient(180deg, #00dd55, #009933);
+}
+
+.sc-progress-bar.hp-yellow .fill {
+  background: linear-gradient(180deg, #ddcc00, #998800);
+}
+
+.sc-progress-bar.hp-red .fill {
+  background: linear-gradient(180deg, #dd3300, #991100);
+}
+
+/* 护盾条 */
+.sc-progress-bar.shield .fill {
+  background: linear-gradient(180deg, #4499ff, #2266cc);
+}
+
+/* 能量条 */
+.sc-progress-bar.energy .fill {
+  background: linear-gradient(180deg, #ffcc00, #cc9900);
+}
+
+/* ─── 选中高亮边框 ────────────────────────── */
+.sc-selected {
+  border-color: var(--sc-border-highlight) !important;
+  box-shadow:
+    0 0 6px rgba(196, 160, 64, 0.5),
+    inset 0 0 6px rgba(196, 160, 64, 0.2) !important;
+}
+
+/* ─── 建造面板格子样式 ────────────────────── */
+.sc-grid-cell {
+  width: 100%;
+  aspect-ratio: 1;
+  background: rgba(20, 25, 35, 0.9);
+  border: 1px solid var(--sc-border-dim);
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.1s ease;
+  overflow: hidden;
+}
+
+/* 格子悬停 */
+.sc-grid-cell:hover:not(.disabled) {
+  border-color: var(--sc-border-highlight);
+  background: var(--sc-bg-hover);
+  box-shadow: 0 0 8px rgba(196, 160, 64, 0.3);
+}
+
+/* 格子按下 */
+.sc-grid-cell:active:not(.disabled) {
+  background: var(--sc-bg-active);
+}
+
+/* 禁用/不可建造 */
+.sc-grid-cell.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  filter: grayscale(0.6);
+}
+
+/* 正在建造/生产的格子 */
+.sc-grid-cell.building {
+  animation: building-pulse 1.2s ease-in-out infinite;
+}
+
+/* ─── 动画 ─────────────────────────────────── */
+
+/* 建造中闪烁动画 */
+@keyframes building-pulse {
+  0%, 100% {
+    border-color: var(--sc-border-gold);
+    box-shadow: 0 0 4px rgba(196, 160, 64, 0.2);
+  }
+  50% {
+    border-color: var(--sc-text-orange);
+    box-shadow: 0 0 12px rgba(224, 120, 48, 0.5);
+  }
+}
+
+/* 资源变化弹跳动画 */
+@keyframes resource-bounce {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.3); }
+  60% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+
+.resource-bounce {
+  animation: resource-bounce 0.3s ease-out;
+}
+
+/* 淡入动画 */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* 脉冲发光 */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 4px rgba(196, 160, 64, 0.3); }
+  50% { box-shadow: 0 0 16px rgba(196, 160, 64, 0.6); }
+}
+
+/* 标题闪烁 */
+@keyframes title-shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+/* 胜利/失败动画 */
+@keyframes victory-glow {
+  0% { text-shadow: 0 0 10px rgba(255, 215, 0, 0.5); }
+  50% { text-shadow: 0 0 30px rgba(255, 215, 0, 0.8), 0 0 60px rgba(255, 215, 0, 0.4); }
+  100% { text-shadow: 0 0 10px rgba(255, 215, 0, 0.5); }
+}
+
+@keyframes defeat-flicker {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* 星空动画 */
+@keyframes twinkle {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+@keyframes float-nebula {
+  0% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(20px, -15px) scale(1.05); }
+  66% { transform: translate(-10px, 10px) scale(0.98); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+/* ─── 滚动条自定义样式 ────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(10, 12, 18, 0.8);
+  border: 1px solid rgba(50, 50, 50, 0.3);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--sc-border-gold);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sc-border-highlight);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ─── 移动端适配 ───────────────────────────── */
+@media (max-width: 768px) {
+  :root {
+    --sc-minimap-size: 140px;
+    --sc-panel-width: 200px;
+    --sc-hud-padding: 4px;
+  }
+
+  .sc-btn {
+    padding: 4px 8px;
+    font-size: 10px;
+  }
+
+  .sc-grid-cell {
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  :root {
+    --sc-minimap-size: 100px;
+    --sc-panel-width: 160px;
+  }
+}
+
+/* ─── 工具类 ───────────────────────────────── */
+.text-gold { color: var(--sc-text-gold); }
+.text-orange { color: var(--sc-text-orange); }
+.text-white { color: var(--sc-text-white); }
+.text-gray { color: var(--sc-text-gray); }
+.text-dim { color: var(--sc-text-dim); }
+.text-mineral { color: var(--sc-mineral-blue); }
+.text-gas { color: var(--sc-gas-green); }
+.text-danger { color: var(--sc-supply-danger); }
+
+/* 指针事件控制 */
+.pointer-none { pointer-events: none; }
+.pointer-auto { pointer-events: auto; }
