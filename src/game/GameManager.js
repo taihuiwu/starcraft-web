@@ -78,72 +78,79 @@ export default class GameManager {
    * @param {HTMLCanvasElement} canvas - 渲染画布
    * @param {string} playerRace - 玩家种族 ('terran' | 'zerg' | 'protoss')
    */
-  async init(canvas, playerRace) {
+  async init(canvas, playerRace, engineRefs = {}) {
     console.log(`[GameManager] 初始化游戏 - 种族: ${playerRace}`);
     this.playerRace = playerRace;
 
-    // ─── 初始化Three.js（延迟加载，避免非浏览器环境报错） ──
-    try {
-      const THREE = await import('three');
-      const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+    // ─── 使用外部注入的引擎引用（来自main.js的引擎层） ──
+    if (engineRefs.scene && engineRefs.renderer && engineRefs.camera) {
+      this.scene = engineRefs.scene;
+      this.renderer = engineRefs.renderer;
+      this.camera = engineRefs.camera;
+      console.log('[GameManager] 使用外部引擎引用');
+    } else {
+      // ─── 初始化Three.js（延迟加载，避免非浏览器环境报错） ──
+      try {
+        const THREE = await import('three');
 
-      // 创建场景
-      this.scene = new THREE.Scene();
-      this.scene.background = new THREE.Color(0x1a1a2e);
+        // 创建场景
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(0x1a1a2e);
 
-      // 创建渲染器
-      this.renderer = new THREE.WebGLRenderer({
-        canvas,
-        antialias: true,
-        alpha: false,
-      });
-      this.renderer.setSize(canvas.clientWidth, canvas.clientHeight);
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      this.renderer.shadowMap.enabled = true;
+        // 创建渲染器
+        this.renderer = new THREE.WebGLRenderer({
+          canvas,
+          antialias: true,
+          alpha: false,
+        });
+        this.renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        this.renderer.shadowMap.enabled = true;
 
-      // 创建RTS摄像机（正交投影）
-      const aspect = canvas.clientWidth / canvas.clientHeight;
-      const frustumSize = 30;
-      this.camera = new THREE.OrthographicCamera(
-        -frustumSize * aspect / 2,
-        frustumSize * aspect / 2,
-        frustumSize / 2,
-        -frustumSize / 2,
-        0.1,
-        1000
-      );
-      this.camera.position.set(20, 30, 20);
-      this.camera.lookAt(0, 0, 0);
+        // 创建RTS摄像机（正交投影）
+        const aspect = canvas.clientWidth / canvas.clientHeight;
+        const frustumSize = 30;
+        this.camera = new THREE.OrthographicCamera(
+          -frustumSize * aspect / 2,
+          frustumSize * aspect / 2,
+          frustumSize / 2,
+          -frustumSize / 2,
+          0.1,
+          1000
+        );
+        this.camera.position.set(20, 30, 20);
+        this.camera.lookAt(0, 0, 0);
 
-      // 环境光照
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-      this.scene.add(ambientLight);
+        // 环境光照
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        this.scene.add(ambientLight);
 
-      // 平行光（模拟太阳）
-      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-      dirLight.position.set(50, 80, 30);
-      dirLight.castShadow = true;
-      this.scene.add(dirLight);
+        // 平行光（模拟太阳）
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(50, 80, 30);
+        dirLight.castShadow = true;
+        this.scene.add(dirLight);
 
-      // 简易地面网格
-      const gridHelper = new THREE.GridHelper(GAME.MAP_SIZE, GAME.MAP_SIZE, 0x444444, 0x222222);
-      this.scene.add(gridHelper);
+        // 简易地面网格
+        const gridHelper = new THREE.GridHelper(GAME.MAP_SIZE, GAME.MAP_SIZE, 0x444444, 0x222222);
+        this.scene.add(gridHelper);
 
-      // 地面平面
-      const groundGeom = new THREE.PlaneGeometry(GAME.MAP_SIZE, GAME.MAP_SIZE);
-      const groundMat = new THREE.MeshLambertMaterial({ color: 0x2d5a1b });
-      const ground = new THREE.Mesh(groundGeom, groundMat);
-      ground.rotation.x = -Math.PI / 2;
-      ground.position.y = -0.01;
-      ground.receiveShadow = true;
-      this.scene.add(ground);
+        // 地面平面
+        const groundGeom = new THREE.PlaneGeometry(GAME.MAP_SIZE, GAME.MAP_SIZE);
+        const groundMat = new THREE.MeshLambertMaterial({ color: 0x2d5a1b });
+        const ground = new THREE.Mesh(groundGeom, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -0.01;
+        ground.receiveShadow = true;
+        this.scene.add(ground);
 
-      // 窗口大小自适应
-      window.addEventListener('resize', () => this._onResize(canvas));
+        // 窗口大小自适应
+        window.addEventListener('resize', () => this._onResize(canvas));
 
-      console.log('[GameManager] Three.js场景初始化完成');
-    } catch (err) {
-      console.warn('[GameManager] Three.js未安装，以纯逻辑模式运行:', err.message);
+        console.log('[GameManager] Three.js场景初始化完成');
+      } catch (err) {
+        console.warn('[GameManager] Three.js未安装，以纯逻辑模式运行:', err.message);
+      }
     }
 
     // ─── 初始化子系统 ──────────────────
