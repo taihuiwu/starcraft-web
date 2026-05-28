@@ -346,5 +346,157 @@ export default class ResourceManager {
         }
       }
     }
+
+    // ─── 采集工人动画更新 ──────────────
+    this._updateHarvesterAnimations(dt);
+  }
+
+  // ═══════════════════════════════════════
+  // 采集工人视觉动画
+  // ═══════════════════════════════════════
+
+  /**
+   * 采集工人动画状态
+   * 每个工人在矿脉和基地之间来回移动
+   * @type {Map<number, HarvesterAnim>}
+   */
+  _harvesterAnims = new Map();
+
+  /**
+   * 创建采集工人动画
+   * @param {number} unitId - 工人单位ID
+   * @param {{x: number, z: number}} mineralPos - 矿脉位置
+   * @param {{x: number, z: number}} basePos - 基地位置
+   */
+  createHarvesterAnim(unitId, mineralPos, basePos) {
+    this._harvesterAnims.set(unitId, {
+      unitId,
+      phase: 'walking_to_mineral', // walking_to_mineral | mining | walking_to_base | dropping
+      targetPos: { ...mineralPos },
+      startPos: { ...basePos },
+      mineralPos: { ...mineralPos },
+      basePos: { ...basePos },
+      phaseTimer: 0,
+      miningDuration: 1.5,   // 采矿动画持续时间（秒）
+      droppingDuration: 0.8, // 卸货动画持续时间（秒）
+      speed: 2.5,            // 移动速度
+      progress: 0,           // 0~1 行走进度
+    });
+  }
+
+  /**
+   * 移除采集工人动画
+   * @param {number} unitId
+   */
+  removeHarvesterAnim(unitId) {
+    this._harvesterAnims.delete(unitId);
+  }
+
+  /**
+   * 获取采集工人当前动画数据（用于渲染）
+   * @param {number} unitId
+   * @returns {{ position: {x,z}, phase: string, facing: number }|null}
+   */
+  getHarvesterAnimState(unitId) {
+    const anim = this._harvesterAnims.get(unitId);
+    if (!anim) return null;
+
+    // 根据阶段计算当前位置
+    let x, z;
+    switch (anim.phase) {
+      case 'walking_to_mineral':
+      case 'walking_to_base': {
+        const t = Math.min(1, anim.progress);
+        x = anim.startPos.x + (anim.targetPos.x - anim.startPos.x) * t;
+        z = anim.startPos.z + (anim.targetPos.z - anim.startPos.z) * t;
+        break;
+      }
+      case 'mining':
+        x = anim.mineralPos.x;
+        z = anim.mineralPos.z;
+        break;
+      case 'dropping':
+        x = anim.basePos.x;
+        z = anim.basePos.z;
+        break;
+      default:
+        x = anim.startPos.x;
+        z = anim.startPos.z;
+    }
+
+    // 计算朝向
+    const dx = anim.targetPos.x - anim.startPos.x;
+    const dz = anim.targetPos.z - anim.startPos.z;
+    const facing = Math.atan2(dz, dx);
+
+    return {
+      position: { x, z },
+      phase: anim.phase,
+      facing,
+      progress: anim.progress,
+    };
+  }
+
+  /**
+   * 更新所有采集工人动画
+   * @param {number} dt - 帧间隔（秒）
+   * @private
+   */
+  _updateHarvesterAnimations(dt) {
+    for (const [unitId, anim] of this._harvesterAnims) {
+      switch (anim.phase) {
+        case 'walking_to_mineral':
+          anim.progress += (anim.speed / this._distance(anim.startPos, anim.targetPos)) * dt;
+          if (anim.progress >= 1) {
+            anim.progress = 0;
+            anim.phase = 'mining';
+            anim.phaseTimer = 0;
+          }
+          break;
+
+        case 'mining':
+          anim.phaseTimer += dt;
+          // 原地采矿，轻微抖动（由渲染层处理）
+          if (anim.phaseTimer >= anim.miningDuration) {
+            // 切换到回程
+            anim.phase = 'walking_to_base';
+            anim.startPos = { ...anim.mineralPos };
+            anim.targetPos = { ...anim.basePos };
+            anim.progress = 0;
+          }
+          break;
+
+        case 'walking_to_base':
+          anim.progress += (anim.speed / this._distance(anim.startPos, anim.targetPos)) * dt;
+          if (anim.progress >= 1) {
+            anim.progress = 0;
+            anim.phase = 'dropping';
+            anim.phaseTimer = 0;
+          }
+          break;
+
+        case 'dropping':
+          anim.phaseTimer += dt;
+          if (anim.phaseTimer >= anim.droppingDuration) {
+            // 开始新一轮采集
+            anim.phase = 'walking_to_mineral';
+            anim.startPos = { ...anim.basePos };
+            anim.targetPos = { ...anim.mineralPos };
+            anim.progress = 0;
+          }
+          break;
+      }
+    }
+  }
+
+  /**
+   * 计算两点距离
+   * @private
+   */
+  _distance(a, b) {
+    const dx = a.x - b.x;
+    const dz = a.z - b.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    return Math.max(0.1, dist);
   }
 }

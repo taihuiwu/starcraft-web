@@ -75,6 +75,24 @@
         </div>
       </div>
 
+      <!-- 地图选择 -->
+      <div class="map-selection-section">
+        <div class="section-title text-gold" style="font-size:12px;">选择地图</div>
+        <div class="map-options">
+          <button
+            v-for="map in presetMapList"
+            :key="map.id"
+            class="map-btn"
+            :class="{ selected: selectedMap === map.id }"
+            @click="selectedMap = map.id"
+          >
+            <div class="map-btn-name">{{ map.name }}</div>
+            <div class="map-btn-info text-dim">{{ map.size }} · {{ map.players }}P</div>
+          </button>
+        </div>
+      </div>
+
+
       <!-- 开始游戏按钮 -->
       <button class="sc-btn start-btn" @click="startGame">
         开始游戏
@@ -161,6 +179,7 @@
  */
 import { ref } from 'vue';
 import { GAME, RACE } from '../../shared/Constants.js';
+import { getPresetMapList } from '../../game/maps/index.js';
 
 // ─── Props定义 ─────────────────────────────
 const props = defineProps({
@@ -191,6 +210,8 @@ const showRaceSelect = ref(false);
 const showDifficultySelect = ref(false);
 const selectedRace = ref(RACE.TERRAN);
 const selectedDifficulty = ref('normal');
+const selectedMap = ref('lost_temple');
+const presetMapList = getPresetMapList();
 
 // ─── 数据 ──────────────────────────────────
 /** 种族选项 */
@@ -256,6 +277,7 @@ function startGame() {
   emit('start-game', {
     race: selectedRace.value,
     difficulty: selectedDifficulty.value,
+    mapId: selectedMap.value,
   });
 }
 
@@ -528,6 +550,52 @@ function formatTime(ticks) {
   background: var(--sc-bg-active);
   border-color: var(--sc-border-highlight);
   color: var(--sc-text-gold-bright);
+}
+
+/* ─── 地图选择 ─────────────────────────────── */
+.map-selection-section {
+  margin-top: 12px;
+  text-align: center;
+}
+
+.map-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 6px;
+}
+
+.map-btn {
+  padding: 8px 14px;
+  background: rgba(15, 18, 28, 0.9);
+  border: 1px solid var(--sc-border-dim);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.2s ease;
+  color: var(--sc-text-white);
+  min-width: 120px;
+}
+
+.map-btn:hover {
+  border-color: var(--sc-border-gold);
+  background: rgba(30, 40, 60, 0.9);
+}
+
+.map-btn.selected {
+  border-color: var(--sc-border-highlight);
+  background: rgba(40, 55, 80, 0.9);
+  box-shadow: 0 0 8px rgba(196, 160, 64, 0.4);
+}
+
+.map-btn-name {
+  font-size: 13px;
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+
+.map-btn-info {
+  font-size: 10px;
 }
 
 /* ─── 开始游戏按钮 ─────────────────────────── */
