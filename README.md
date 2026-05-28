@@ -354,3 +354,4 @@ for f in tests/test_*.js; do node "$f"; done
 ## 📄 许可证
 
 [MIT License](./LICENSE) © 2026 StarCraft Web Contributors
+
