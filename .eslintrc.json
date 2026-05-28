@@ -1,0 +1,27 @@
+{
+  "env": { "browser": true, "es2022": true, "node": true, "worker": true },
+  "parserOptions": { "ecmaVersion": "latest", "sourceType": "module" },
+  "rules": {
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "no-undef": "error",
+    "no-redeclare": "error",
+    "no-duplicate-case": "error",
+    "no-unreachable": "error",
+    "no-constant-condition": "warn",
+    "no-extra-semi": "warn",
+    "no-func-assign": "error",
+    "no-irregular-whitespace": "warn",
+    "eqeqeq": ["warn", "always"],
+    "no-eval": "error",
+    "no-implied-eval": "error",
+    "no-new-func": "error",
+    "no-self-compare": "warn",
+    "no-throw-literal": "warn",
+    "no-useless-concat": "warn",
+    "no-var": "error",
+    "prefer-const": "warn",
+    "no-console": ["warn", { "allow": ["warn", "error"] }],
+    "no-debugger": "error"
+  },
+  "ignorePatterns": ["node_modules/**", "dist/**", "build/**"]
+}

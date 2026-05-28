@@ -10,6 +10,10 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "lint": "eslint src/ server/ --ext .js",
+    "lint:fix": "eslint --fix src/ server/ --ext .js",
+    "format": "prettier --write 'src/**/*.{js,vue}' 'server/**/*.js'",
+    "format:check": "prettier --check 'src/**/*.{js,vue}' 'server/**/*.js'",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron .\"",
     "electron:build": "vite build && electron-builder",
     "electron:build:win": "vite build && electron-builder --win",
@@ -40,11 +44,15 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "public/icon.png",
@@ -61,7 +69,10 @@
       "shortcutName": "StarCraft Web"
     },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": "public/icon.png",
       "category": "public.app-category.games",
       "artifactName": "StarCraft-Web-${version}-mac-${arch}.${ext}"
@@ -70,11 +81,15 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "deb",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "public/icon.png",
@@ -87,6 +102,8 @@
     "concurrently": "^8.2.0",
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0",
+    "eslint": "^8.57.1",
+    "prettier": "^3.8.3",
     "vite": "^5.0.0",
     "vitest": "^1.0.0",
     "wait-on": "^7.0.0"
