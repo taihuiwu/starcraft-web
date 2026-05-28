@@ -348,7 +348,7 @@ export default class ResourceManager {
     }
 
     // ─── 采集工人动画更新 ──────────────
-    this._updateHarvesterAnimations(dt);
+    this._updateHarvesterAnimations(delta);
   }
 
   // ═══════════════════════════════════════
