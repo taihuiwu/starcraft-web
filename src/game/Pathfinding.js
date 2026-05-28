@@ -170,17 +170,16 @@ export class Pathfinding {
    * @returns {Array<{gx: number, gz: number}>|null} 格子路径
    */
   _astar(sx, sz, ex, ez, unitSize) {
-    _astar(sx, sz, ex, ez, unitSize) {
-      const open = new MinHeap();
-      const closed = new Set();
-      const nodes = new Map(); // key="gx,gz" → node
-      const startNode = this._acquireNode(sx, sz);
-      startNode.g = 0;
-      startNode.h = this._heuristic(sx, sz, ex, ez);
-      startNode.f = startNode.h;
-      startNode.open = true;
-      nodes.set(`${sx},${sz}`, startNode);
-      open.push(startNode);
+    const open = new MinHeap();
+    const closed = new Set();
+    const nodes = new Map(); // key="gx,gz" → node
+    const startNode = this._acquireNode(sx, sz);
+    startNode.g = 0;
+    startNode.h = this._heuristic(sx, sz, ex, ez);
+    startNode.f = startNode.h;
+    startNode.open = true;
+    nodes.set(`${sx},${sz}`, startNode);
+    open.push(startNode);
 
     let searched = 0;
 

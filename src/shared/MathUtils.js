@@ -134,3 +134,12 @@ export function computeAABB(points) {
 
   return { min: { x: minX, y: minY, z: minZ }, max: { x: maxX, y: maxY, z: maxZ } };
 }
+
+/**
+ * 获取单位有效生命值（HP + 护盾）
+ * @param {{ hp?: number, shield?: number }} unit
+ * @returns {number}
+ */
+export function effectiveHP(unit) {
+  return (unit.hp || 0) + (unit.shield || 0);
+}
