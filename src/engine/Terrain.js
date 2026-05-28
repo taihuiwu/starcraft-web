@@ -350,14 +350,55 @@ export class Terrain {
     const geometry = new THREE.PlaneGeometry(worldSize, worldSize, 64, 64);
     geometry.rotateX(-Math.PI / 2);
 
-    // 水面材质：半透明蓝色 + 基础光泽
-    const material = new THREE.MeshStandardMaterial({
-      color: 0x1a6090,
+    // 水面自定义着色器材质（CPU波浪动画→GPU）
+    this._waterUniforms = {
+      uTime: { value: 0.0 },
+      uColor: { value: new THREE.Color(0x1a6090) },
+      uOpacity: { value: 0.6 },
+    };
+
+    const material = new THREE.ShaderMaterial({
+      uniforms: this._waterUniforms,
       transparent: true,
-      opacity: 0.6,
-      roughness: 0.1,
-      metalness: 0.3,
       side: THREE.DoubleSide,
+      vertexShader: /* glsl */ `
+        uniform float uTime;
+        varying vec3 vWorldPos;
+        varying vec3 vNormal;
+
+        void main() {
+          vec3 pos = position;
+          // 多层正弦波叠加，与原CPU逻辑一致
+          float wave1 = sin(pos.x * 0.3 + uTime * 1.5) * 0.15;
+          float wave2 = sin(pos.z * 0.4 + uTime * 1.2) * 0.1;
+          float wave3 = sin((pos.x + pos.z) * 0.2 + uTime * 0.8) * 0.08;
+          pos.y = wave1 + wave2 + wave3;
+
+          // 差分近似法线
+          float dx = 0.15 * 0.3 * cos(pos.x * 0.3 + uTime * 1.5)
+                    + 0.08 * 0.2 * cos((pos.x + pos.z) * 0.2 + uTime * 0.8);
+          float dz = 0.1 * 0.4 * cos(pos.z * 0.4 + uTime * 1.2)
+                    + 0.08 * 0.2 * cos((pos.x + pos.z) * 0.2 + uTime * 0.8);
+          vNormal = normalize(vec3(-dx, 1.0, -dz));
+
+          vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+          vWorldPos = worldPos.xyz;
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 uColor;
+        uniform float uOpacity;
+        varying vec3 vWorldPos;
+        varying vec3 vNormal;
+
+        void main() {
+          // 简单光照
+          vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
+          float diff = max(dot(vNormal, lightDir), 0.0) * 0.4 + 0.6;
+          gl_FragColor = vec4(uColor * diff, uOpacity);
+        }
+      `,
     });
 
     const mesh = new THREE.Mesh(geometry, material);
@@ -398,26 +439,10 @@ export class Terrain {
 
     this._waterTime += dt;
 
-    // 水面顶点波动动画
-    const geometry = this.waterMesh.geometry;
-    const posAttr = geometry.getAttribute('position');
-    const count = posAttr.count;
-    const worldSize = this.size * this.tileSize;
-
-    for (let i = 0; i < count; i++) {
-      const x = posAttr.getX(i);
-      const z = posAttr.getZ(i);
-
-      // 多层正弦波叠加，模拟水面波纹
-      const wave1 = Math.sin(x * 0.3 + this._waterTime * 1.5) * 0.15;
-      const wave2 = Math.sin(z * 0.4 + this._waterTime * 1.2) * 0.1;
-      const wave3 = Math.sin((x + z) * 0.2 + this._waterTime * 0.8) * 0.08;
-
-      posAttr.setY(i, wave1 + wave2 + wave3);
+    // GPU波浪动画：仅更新uniform（消除CPU 12K三角函数/帧）
+    if (this._waterUniforms) {
+      this._waterUniforms.uTime.value = this._waterTime;
     }
-
-    posAttr.needsUpdate = true;
-    geometry.computeVertexNormals();
   }
 
   // ═══════════════════════════════════════════════
