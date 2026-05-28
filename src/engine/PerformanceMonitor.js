@@ -17,14 +17,20 @@ export class PerformanceMonitor {
     this._renderer = renderer;
 
     // ─── FPS 计算 ───
-    /**
-     * 帧时间滑动窗口（毫秒）
-     * @type {number[]}
-     */
-    this._frameTimes = [];
-
     /** 滑动窗口最大容量 */
     this._maxSamples = 60;
+
+    /**
+     * 环形缓冲区（替代数组 shift 操作，O(1) 写入）
+     * @type {Float64Array}
+     */
+    this._ringBuffer = new Float64Array(this._maxSamples);
+
+    /** 环形缓冲写入指针 */
+    this._ringHead = 0;
+
+    /** 环形缓冲有效数据量 */
+    this._ringCount = 0;
 
     /** 上一帧时间戳 */
     this._lastTime = 0;
@@ -148,19 +154,18 @@ export class PerformanceMonitor {
     const now = performance.now();
     const frameTime = now - this._frameStartTime;
 
-    // ─── 更新帧时间窗口 ───
-    this._frameTimes.push(frameTime);
-    if (this._frameTimes.length > this._maxSamples) {
-      this._frameTimes.shift();
-    }
+    // ─── 更新帧时间窗口（环形缓冲 O(1)） ───
+    this._ringBuffer[this._ringHead] = frameTime;
+    this._ringHead = (this._ringHead + 1) % this._maxSamples;
+    if (this._ringCount < this._maxSamples) this._ringCount++;
 
     // ─── 计算 FPS ───
-    if (this._frameTimes.length > 0) {
+    if (this._ringCount > 0) {
       let sum = 0;
-      for (let i = 0; i < this._frameTimes.length; i++) {
-        sum += this._frameTimes[i];
+      for (let i = 0; i < this._ringCount; i++) {
+        sum += this._ringBuffer[i];
       }
-      const avgFrameTime = sum / this._frameTimes.length;
+      const avgFrameTime = sum / this._ringCount;
       this._fps = avgFrameTime > 0 ? 1000 / avgFrameTime : 0;
     }
 
@@ -297,12 +302,12 @@ export class PerformanceMonitor {
    */
   getStats() {
     let avgFrameTime = 0;
-    if (this._frameTimes.length > 0) {
+    if (this._ringCount > 0) {
       let sum = 0;
-      for (let i = 0; i < this._frameTimes.length; i++) {
-        sum += this._frameTimes[i];
+      for (let i = 0; i < this._ringCount; i++) {
+        sum += this._ringBuffer[i];
       }
-      avgFrameTime = sum / this._frameTimes.length;
+      avgFrameTime = sum / this._ringCount;
     }
 
     return {
@@ -369,7 +374,8 @@ export class PerformanceMonitor {
    * 重置所有统计数据
    */
   reset() {
-    this._frameTimes.length = 0;
+    this._ringHead = 0;
+    this._ringCount = 0;
     this._fps = 0;
     this._drawCalls = 0;
     this._memory = null;

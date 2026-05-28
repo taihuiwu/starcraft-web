@@ -39,10 +39,16 @@ export class InstancedMeshPool {
     this._freeIds = [];
 
     /**
-     * ID → 实例索引的映射
-     * @type {Map<number, number>}
-     */
-    this._idToIndex = new Map();
+     /** ID → 实例索引的映射
+      * @type {Map<number, number>}
+      */
+     this._idToIndex = new Map();
+
+     /**
+      * 实例索引 → ID 的反向映射（O(1) swap-delete 查找）
+      * @type {Map<number, number>}
+      */
+     this._indexToId = new Map();
 
     /**
      * 当前活跃实例数量
@@ -81,6 +87,7 @@ export class InstancedMeshPool {
     const index = this._activeCount;
     this._usedIds.add(id);
     this._idToIndex.set(id, index);
+    this._indexToId.set(index, id);
 
     // 设置变换矩阵
     const matrix = transform || this._defaultMatrix;
@@ -103,28 +110,21 @@ export class InstancedMeshPool {
 
     const removeIndex = this._idToIndex.get(id);
 
-    // 将最后一个实例移到被移除位置
     const lastIndex = this._activeCount - 1;
     if (removeIndex !== lastIndex) {
-      // 读取最后一个实例的变换矩阵
       const tempMatrix = new THREE.Matrix4();
       this.mesh.getMatrixAt(lastIndex, tempMatrix);
-
-      // 写入被删除位置
       this.mesh.setMatrixAt(removeIndex, tempMatrix);
-
-      // 更新被移动实例的 ID 映射
-      for (const [otherId, otherIndex] of this._idToIndex) {
-        if (otherIndex === lastIndex) {
-          this._idToIndex.set(otherId, removeIndex);
-          break;
-        }
-      }
+      // O(1) 反向映射查找被移动的实例 ID
+      const movedId = this._indexToId.get(lastIndex);
+      this._idToIndex.set(movedId, removeIndex);
+      this._indexToId.set(removeIndex, movedId);
     }
 
     // 清理被删除 ID
     this._usedIds.delete(id);
     this._idToIndex.delete(id);
+    this._indexToId.delete(lastIndex);
     this._freeIds.push(id);
 
     this._activeCount--;
@@ -171,6 +171,7 @@ export class InstancedMeshPool {
     }
     this._usedIds.clear();
     this._idToIndex.clear();
+    this._indexToId.clear();
     this._freeIds.length = 0;
     this._activeCount = 0;
   }
