@@ -17,3 +17,5 @@ export { LODSystem, LOD_LEVEL } from './LODSystem.js';
 export { InstancedMeshPool } from './InstancedMeshPool.js';
 export { Quadtree, Bounds } from './Quadtree.js';
 export { PerformanceMonitor } from './PerformanceMonitor.js';
+export { AssetLoader, ASSET_TYPE } from './AssetLoader.js';
+export { InputManager, INPUT_TYPE } from './InputManager.js';
