@@ -947,10 +947,14 @@ export class SyncManager {
    */
   _cleanupSnapshots() {
     const cutoffFrame = this.lastConfirmedFrame - 120; // 保留 5 秒
+    const keysToDelete = [];
     for (const [frame] of this.frameSnapshots) {
       if (frame < cutoffFrame) {
-        this.frameSnapshots.delete(frame);
+        keysToDelete.push(frame);
       }
+    }
+    for (const frame of keysToDelete) {
+      this.frameSnapshots.delete(frame);
     }
   }
 

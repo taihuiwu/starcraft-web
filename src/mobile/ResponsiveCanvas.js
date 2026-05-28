@@ -161,7 +161,39 @@ export class ResponsiveCanvas {
       this._qualityLevel++;
       console.warn(`[ResponsiveCanvas] Memory pressure detected, quality downgraded to ${this._qualityLevel}`);
       this.resize();
+      this._scheduleQualityRestore();
     }
+  }
+
+  /**
+   * 安排一次延时检查，尝试在内存压力缓解后恢复画质
+   * @private
+   */
+  _scheduleQualityRestore() {
+    if (this._qualityRestoreTimer) return; // 已有定时器在等待
+    this._qualityRestoreTimer = setTimeout(() => {
+      this._qualityRestoreTimer = null;
+      this._tryRestoreQuality();
+    }, 30000);
+  }
+
+  /**
+   * 尝试恢复一个画质等级（如果内存压力已缓解）
+   * @private
+   */
+  _tryRestoreQuality() {
+    if (this._qualityLevel <= QUALITY_LEVEL.HIGH) return; // 已经足够高
+    if (!('memory' in performance)) return;
+    try {
+      const mem = performance.memory;
+      if (mem && mem.usedJSHeapSize < mem.jsHeapSizeLimit * 0.7) {
+        this._qualityLevel--;
+        console.info(`[ResponsiveCanvas] Memory pressure eased, quality restored to ${this._qualityLevel}`);
+        this.resize();
+        // 继续尝试进一步恢复
+        this._scheduleQualityRestore();
+      }
+    } catch (_e) { /* ignore */ }
   }
 
   _handleResize() {
@@ -273,6 +305,7 @@ export class ResponsiveCanvas {
     window.removeEventListener('orientationchange', this._onOrientationChange);
     if (this._memoryCheckInterval) clearInterval(this._memoryCheckInterval);
     if (this._resizeTimer) cancelAnimationFrame(this._resizeTimer);
+    if (this._qualityRestoreTimer) clearTimeout(this._qualityRestoreTimer);
     this._resizeCallbacks.length = 0;
   }
 }

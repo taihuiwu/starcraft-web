@@ -247,7 +247,7 @@ export class GrassSystem {
   generatePatch(center, radius) {
     if (!this.terrain || !this.terrain.heightData) {
       console.warn('[GrassSystem] 地形数据不可用，无法生成草地');
-      return;
+      return { success: false, placed: 0 };
     }
 
     const area = Math.PI * radius * radius;
@@ -258,7 +258,7 @@ export class GrassSystem {
 
     if (bladeCount <= 0) {
       console.warn('[GrassSystem] 已达最大草叶数上限:', this.maxBlades);
-      return;
+      return { success: false, placed: 0 };
     }
 
     const heightScale = this.terrain.heightScale || 15;
@@ -319,6 +319,7 @@ export class GrassSystem {
     this.instancedMesh.geometry.getAttribute('instanceRotation').needsUpdate = true;
 
     console.log('[GrassSystem] 生成草叶:', placed, '总计:', this._bladeCount);
+    return { success: true, placed };
   }
 
   /**

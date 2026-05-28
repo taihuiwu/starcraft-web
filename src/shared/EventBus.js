@@ -9,6 +9,16 @@ class EventBus {
     this.listeners = new Map();
     /** @type {Map<string, Set<Function>>} 一次性监听器 */
     this.onceListeners = new Map();
+    /** @type {Function|null} 可选的全局错误处理回调 */
+    this._onError = null;
+  }
+
+  /**
+   * 设置可选的全局错误处理回调（用于调试）
+   * @param {Function|null} callback - 接收 (event, error) 参数的回调
+   */
+  onError(callback) {
+    this._onError = callback;
   }
 
   /**
@@ -58,27 +68,17 @@ class EventBus {
    * @param {*} data - 事件数据
    */
   emit(event, data) {
-    // 常规监听器
     const listeners = this.listeners.get(event);
     if (listeners) {
       for (const cb of listeners) {
-        try {
-          cb(data);
-        } catch (err) {
-          console.error(`[EventBus] Error in listener for "${event}":`, err);
-        }
+        cb(data);
       }
     }
 
-    // 一次性监听器
     const once = this.onceListeners.get(event);
     if (once) {
       for (const cb of once) {
-        try {
-          cb(data);
-        } catch (err) {
-          console.error(`[EventBus] Error in once-listener for "${event}":`, err);
-        }
+        cb(data);
       }
       once.clear();
     }

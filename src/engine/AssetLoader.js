@@ -64,9 +64,14 @@ export class AssetLoader {
   /**
    * @param {THREE.LoadingManager} [manager] - Three.js LoadingManager (可选)
    */
-  constructor(manager) {
+  constructor(manager, options = {}) {
     /** @type {THREE.LoadingManager} */
     this._manager = manager || new THREE.LoadingManager();
+
+    /** @type {number} 加载失败重试次数 (默认 2) */
+    this._defaultRetries = options.retries ?? 2;
+    /** @type {number} 重试延迟 (ms, 默认 1000) */
+    this._retryDelay = options.retryDelay ?? 1000;
 
     /** @type {Map<string, any>} URL → 已加载资源缓存 */
     this._cache = new Map();
@@ -102,20 +107,29 @@ export class AssetLoader {
     const results = new Map();
 
     const tasks = manifest.map(async (item) => {
-      try {
-        const resource = await this.loadSingle(item.url, item.type);
-        const key = item.name || item.url;
-        results.set(key, resource);
-        this._loadedCount++;
-        if (onProgress) {
-          try { onProgress(this._loadedCount, this._totalCount, item); } catch (e) { /* ignore */ }
+      const retries = item.retries ?? this._defaultRetries;
+      let lastErr;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const resource = await this.loadSingle(item.url, item.type);
+          const key = item.name || item.url;
+          results.set(key, resource);
+          this._loadedCount++;
+          if (onProgress) {
+            try { onProgress(this._loadedCount, this._totalCount, item); } catch (e) { /* ignore */ }
+          }
+          return;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, this._retryDelay));
+          }
         }
-      } catch (err) {
-        console.error(`[AssetLoader] Failed to load "${item.url}":`, err);
-        this._loadedCount++;
-        if (onProgress) {
-          try { onProgress(this._loadedCount, this._totalCount, item); } catch (e) { /* ignore */ }
-        }
+      }
+      console.error(`[AssetLoader] Failed to load "${item.url}" after ${retries + 1} attempts:`, lastErr);
+      this._loadedCount++;
+      if (onProgress) {
+        try { onProgress(this._loadedCount, this._totalCount, item); } catch (e) { /* ignore */ }
       }
     });
 

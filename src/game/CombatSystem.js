@@ -75,10 +75,14 @@ export default class CombatSystem {
       }
     }
 
-    // ─── 清理已完成的攻击特效 ────────
-    this.attackEffects = this.attackEffects.filter(e => e.lifetime < e.maxLifetime);
     for (const effect of this.attackEffects) {
       effect.lifetime += dt;
+    }
+    // ─── 就地清理已完成的攻击特效（避免每帧分配新数组） ────────
+    for (let i = this.attackEffects.length - 1; i >= 0; i--) {
+      if (this.attackEffects[i].lifetime >= this.attackEffects[i].maxLifetime) {
+        this.attackEffects.splice(i, 1);
+      }
     }
   }
 

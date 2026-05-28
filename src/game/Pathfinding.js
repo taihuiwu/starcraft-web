@@ -66,25 +66,7 @@ class MinHeap {
   }
 }
 
-// ── 节点工厂（对象池减少GC） ──
-const nodePool = [];
-function acquireNode(gx, gz) {
-  const node = nodePool.length > 0 ? nodePool.pop() : {};
-  node.gx = gx;
-  node.gz = gz;
-  node.g = Infinity;
-  node.h = 0;
-  node.f = Infinity;
-  node.parent = null;
-  node.open = false;
-  return node;
-}
 
-function releaseNode(node) {
-  node.parent = null;
-  node.open = false;
-  nodePool.push(node);
-}
 
 // ═══════════════════════════════════════════
 // Pathfinding 主类
@@ -104,6 +86,8 @@ export class Pathfinding {
     this.walkable = walkable; // 2D boolean grid
     this.maxSearchNodes = options.maxSearchNodes || 2000;
     this.cacheSize = options.cacheSize || 1024;
+    // ── 实例级节点池（对象池减少GC） ──
+    this._nodePool = [];
 
     // 路径缓存: key = "startX,startZ,endX,endZ,size" → path[]
     this._cache = new Map();
@@ -186,17 +170,17 @@ export class Pathfinding {
    * @returns {Array<{gx: number, gz: number}>|null} 格子路径
    */
   _astar(sx, sz, ex, ez, unitSize) {
-    const open = new MinHeap();
-    const closed = new Set();
-    const nodes = new Map(); // key="gx,gz" → node
-
-    const startNode = acquireNode(sx, sz);
-    startNode.g = 0;
-    startNode.h = this._heuristic(sx, sz, ex, ez);
-    startNode.f = startNode.h;
-    startNode.open = true;
-    nodes.set(`${sx},${sz}`, startNode);
-    open.push(startNode);
+    _astar(sx, sz, ex, ez, unitSize) {
+      const open = new MinHeap();
+      const closed = new Set();
+      const nodes = new Map(); // key="gx,gz" → node
+      const startNode = this._acquireNode(sx, sz);
+      startNode.g = 0;
+      startNode.h = this._heuristic(sx, sz, ex, ez);
+      startNode.f = startNode.h;
+      startNode.open = true;
+      nodes.set(`${sx},${sz}`, startNode);
+      open.push(startNode);
 
     let searched = 0;
 
@@ -208,7 +192,7 @@ export class Pathfinding {
         // 回溯路径
         const path = this._reconstructPath(current);
         // 清理所有节点
-        for (const n of nodes.values()) releaseNode(n);
+        for (const n of nodes.values()) this._releaseNode(n);
         return path;
       }
 
@@ -239,7 +223,7 @@ export class Pathfinding {
 
         let neighbor = nodes.get(nKey);
         if (!neighbor) {
-          neighbor = acquireNode(nx, nz);
+          neighbor = this._acquireNode(nx, nz);
           nodes.set(nKey, neighbor);
         }
 
@@ -258,7 +242,7 @@ export class Pathfinding {
     }
 
     // 未找到路径，清理
-    for (const n of nodes.values()) releaseNode(n);
+    for (const n of nodes.values()) this._releaseNode(n);
     return null;
   }
 
@@ -399,6 +383,32 @@ export class Pathfinding {
   clearCache() {
     this._cache.clear();
     this._cacheOrder.length = 0;
+  }
+
+  /**
+   * 从实例节点池获取一个节点
+   * @private
+   */
+  _acquireNode(gx, gz) {
+    const node = this._nodePool.length > 0 ? this._nodePool.pop() : {};
+    node.gx = gx;
+    node.gz = gz;
+    node.g = Infinity;
+    node.h = 0;
+    node.f = Infinity;
+    node.parent = null;
+    node.open = false;
+    return node;
+  }
+
+  /**
+   * 归还节点到实例节点池
+   * @private
+   */
+  _releaseNode(node) {
+    node.parent = null;
+    node.open = false;
+    this._nodePool.push(node);
   }
 }
 

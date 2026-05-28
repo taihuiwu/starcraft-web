@@ -304,7 +304,15 @@ export class MobileControls {
     if (!this._enabled) return;
     e.preventDefault();
 
+    const el = this._domElement;
+    const rect = el ? el.getBoundingClientRect() : null;
+
     for (const touch of e.changedTouches) {
+      // 边界检查: 仅处理在 canvas 元素范围内的触摸
+      if (rect && (touch.clientX < rect.left || touch.clientX > rect.right ||
+                   touch.clientY < rect.top || touch.clientY > rect.bottom)) {
+        continue;
+      }
       this._touches.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
     }
 

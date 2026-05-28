@@ -210,19 +210,18 @@ export class Renderer {
     // 1. 渲染主场景（地形、单位、建筑等）
     this.renderer.render(this.scene, this.camera);
 
-    // 2. 渲染粒子子场景（叠加在主场景之上）
-    // 先保存主场景的背景和雾效，临时清空以渲染透明粒子
-    const mainFog = this.scene.fog;
-    this.scene.fog = null;
+    // 2. 渲染粒子子场景（叠加在主场景之上，仅在有粒子时执行）
+    if (this.particleScene.children.length > 0) {
+      const mainFog = this.scene.fog;
+      this.scene.fog = null;
 
-    // 使用自动清除关闭，实现叠加
-    this.renderer.autoClear = false;
-    this.renderer.clearDepth(); // 仅清除深度缓冲
-    this.renderer.render(this.particleScene, this.particleCamera);
+      this.renderer.autoClear = false;
+      this.renderer.clearDepth();
+      this.renderer.render(this.particleScene, this.particleCamera);
 
-    // 恢复主场景状态
-    this.renderer.autoClear = true;
-    this.scene.fog = mainFog;
+      this.renderer.autoClear = true;
+      this.scene.fog = mainFog;
+    }
   }
 
   // ═══════════════════════════════════════════════

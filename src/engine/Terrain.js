@@ -313,7 +313,11 @@ export class Terrain {
    * @private
    */
   _getTerrainColor(h) {
-    // 颜色分层点
+    // 防御性检查：NaN或越界值使用默认草地色
+    if (typeof h !== 'number' || Number.isNaN(h) || h < 0 || h > 1) {
+      return { r: 0.25, g: 0.5, b: 0.15 };
+    }
+
     if (h < this.waterLevel * 0.8) {
       // 深水区 - 深蓝
       return { r: 0.15, g: 0.25, b: 0.45 };

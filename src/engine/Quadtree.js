@@ -233,8 +233,9 @@ export class Quadtree {
    * @param {Bounds} range - 查询范围
    * @returns {object[]} 范围内的对象数组
    */
-  queryRange(range) {
-    const results = [];
+  queryRange(range, reuseArray) {
+    const results = reuseArray || [];
+    if (!reuseArray) results.length = 0;
     this._queryRangeNode(this.root, range, results);
     return results;
   }
