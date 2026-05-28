@@ -12,7 +12,7 @@ import * as THREE from 'three';
 class ParticleEffect {
   /**
    * @param {THREE.Object3D} root - 粒子根对象
-   * @param {Function} updateFn - 每帧更新回调 (effect, dt) => void
+   * @param {Function} updateFn - 每帧更新回调 (effect, delta) => void
    * @param {number} duration - 特效持续时间（秒），0表示持续存在
    * @param {boolean} looping - 是否循环播放
    */
@@ -27,13 +27,13 @@ class ParticleEffect {
 
   /**
    * 更新特效
-   * @param {number} dt - 帧间隔（秒）
-   */
-  update(dt) {
+   * @param {number} delta - 帧间隔（秒）
+ */
+  update(delta) {
     if (!this.alive) return;
-    this.age += dt;
+    this.age += delta;
     // 调用具体特效的更新逻辑
-    this._updateFn(this, dt);
+    this._updateFn(this, delta);
     // 非循环特效超过生命周期则标记死亡
     if (!this.looping && this.age >= this.duration) {
       this.alive = false;
@@ -670,13 +670,13 @@ export class ParticleSystem {
 
   /**
    * 每帧更新所有活跃粒子特效
-   * @param {number} dt - 帧间隔（秒）
-   */
-  update(dt) {
+   * @param {number} delta - 帧间隔（秒）
+ */
+  update(delta) {
     // 从后往前遍历，方便删除
     for (let i = this._effects.length - 1; i >= 0; i--) {
       const effect = this._effects[i];
-      effect.update(dt);
+      effect.update(delta);
 
       // 如果特效已死亡，移除并释放资源
       if (!effect.alive) {

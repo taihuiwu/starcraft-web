@@ -136,15 +136,15 @@ export default class MissionScript {
 
   /**
    * 每帧更新脚本逻辑
-   * @param {number} dt - 帧间隔时间（秒）
+   * @param {number} delta - 帧间隔时间（秒）
    */
-  update(dt) {
+  update(delta) {
     if (this.finished || this.paused) return;
 
-    this.elapsedTime += dt;
+    this.elapsedTime += delta;
 
     // ─── 处理等待队列 ─────────────────────
-    this._processWaitQueue(dt);
+    this._processWaitQueue(delta);
 
     // ─── 处理定时触发器 ───────────────────
     this._processTimedTriggers();
@@ -164,10 +164,10 @@ export default class MissionScript {
    * 处理等待队列中的延迟动作
    * @param {number} dt - 帧间隔时间
    */
-  _processWaitQueue(dt) {
+  _processWaitQueue(delta) {
     for (let i = this.waitQueue.length - 1; i >= 0; i--) {
       const entry = this.waitQueue[i];
-      entry.remaining -= dt;
+      entry.remaining -= delta;
       if (entry.remaining <= 0) {
         // 等待结束，执行后续动作
         this._executeActionSequence(entry.thenActions);

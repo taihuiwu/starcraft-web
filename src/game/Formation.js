@@ -168,7 +168,7 @@ export default class Formation {
    * 更新编队状态（每帧调用）
    * @param {number} dt - 帧间隔（秒）
    */
-  update(dt) {
+  update(delta) {
     for (const [groupId, group] of this.groups) {
       if (!group.moving || !group.targetPosition) continue;
 

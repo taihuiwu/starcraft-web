@@ -436,12 +436,12 @@ export class Terrain {
 
   /**
    * 每帧更新地形（主要是水面波动动画）
-   * @param {number} dt - 帧间隔（秒）
+   * @param {number} delta - 帧间隔（秒）
    */
-  update(dt) {
+  update(delta) {
     if (!this.waterMesh) return;
 
-    this._waterTime += dt;
+    this._waterTime += delta;
 
     // GPU波浪动画：仅更新uniform（消除CPU 12K三角函数/帧）
     if (this._waterUniforms) {

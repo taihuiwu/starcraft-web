@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════
 
 import { RACE, AI_STATE, COMMAND } from '../../shared/Constants.js';
-import { distance2D, randomInt, randomFloat } from '../../shared/MathUtils.js';
+import { distance2D, randomInt, randomFloat, effectiveHP } from '../../shared/MathUtils.js';
 import { eventBus } from '../../shared/EventBus.js';
 import { BuildOrderManager, ACTION_TYPE } from './BuildOrder.js';
 
@@ -100,17 +100,17 @@ export class AIController {
 
   /**
    * AI决策主循环（每帧调用）
-   * @param {number} dt - 帧间隔（秒）
+   * @param {number} delta - 帧间隔（秒）
    * @param {object} gameState - 当前游戏状态
    */
-  update(dt, gameState) {
+  update(delta, gameState) {
     this.gameState = gameState;
 
     // 决策频率控制
-    this.decisionTimer += dt;
+    this.decisionTimer += delta;
     if (this.decisionTimer < this.config.decisionInterval) {
       // 只在决策间隔内进行微操更新
-      this._updateMicro(dt);
+      this._updateMicro(delta);
       return;
     }
     this.decisionTimer = 0;
@@ -132,7 +132,7 @@ export class AIController {
     this._updateState(snapshot);
 
     // 微操更新
-    this._updateMicro(dt);
+    this._updateMicro(delta);
   }
 
   // ═══════════════════════════════════════════
@@ -552,8 +552,8 @@ export class AIController {
   // 微操系统
   // ═══════════════════════════════════════════
 
-  _updateMicro(dt) {
-    this.microTimer += dt;
+  _updateMicro(delta) {
+    this.microTimer += delta;
     if (this.microTimer < this.config.microDelay) return;
     this.microTimer = 0;
 
@@ -588,7 +588,7 @@ export class AIController {
         if (nearbyEnemies.length > 1) {
           // 集火血量最低的
           const weakest = nearbyEnemies.reduce((min, e) =>
-            (e.hp + (e.shield || 0)) < (min.hp + (min.shield || 0)) ? e : min
+            effectiveHP(e) < effectiveHP(min) ? e : min
           );
           eventBus.emit('ai:command', {
             playerId: this.playerId,

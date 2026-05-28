@@ -294,11 +294,11 @@ export default class TechTree {
   /**
    * 科技树每tick更新
    * 推进所有正在研发中的科技进度
-   * @param {number} dt - tick间隔（秒）
+   * @param {number} delta - tick间隔（秒）
    */
-  update(dt) {
+  update(delta) {
     const tickRate = 24; // GAME.TICK_RATE
-    const tickIncrement = dt * tickRate; // 转换为tick数
+    const tickIncrement = delta * tickRate; // 转换为tick数
 
     for (const [player, techs] of Object.entries(this.playerTechs)) {
       for (const [techId, state] of Object.entries(techs)) {

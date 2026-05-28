@@ -473,18 +473,18 @@ export default class CampaignManager {
 
   /**
    * 每帧更新（由GameManager调用）
-   * @param {number} dt - 帧间隔时间（秒）
+   * @param {number} delta - 帧间隔时间（秒）
    */
-  update(dt) {
+  update(delta) {
     if (!this.missionActive || this.script.finished) return;
 
-    this.missionElapsedTime += dt;
+    this.missionElapsedTime += delta;
 
     // 更新任务脚本
-    this.script.update(dt);
+    this.script.update(delta);
 
     // 发射战役更新事件（供UI刷新）
-    if (Math.floor(this.missionElapsedTime * 4) !== Math.floor((this.missionElapsedTime - dt) * 4)) {
+    if (Math.floor(this.missionElapsedTime * 4) !== Math.floor((this.missionElapsedTime - delta) * 4)) {
       eventBus.emit('campaign:update', {
         elapsedTime: this.missionElapsedTime,
         objectives: this.script.objectives,

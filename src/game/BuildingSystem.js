@@ -167,11 +167,11 @@ export default class BuildingSystem {
   /**
    * 建筑系统每tick更新
    * 推进所有正在建造中的建筑进度
-   * @param {number} dt - tick间隔（秒）
+   * @param {number} delta - tick间隔（秒）
    */
-  update(dt) {
+  update(delta) {
     const tickRate = 24; // GAME.TICK_RATE
-    const tickIncrement = dt * tickRate;
+    const tickIncrement = delta * tickRate;
 
     for (const building of this.gameManager.buildings) {
       if (!building.alive || building.isComplete) continue;

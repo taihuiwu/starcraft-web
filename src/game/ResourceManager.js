@@ -307,10 +307,10 @@ export default class ResourceManager {
   /**
    * 资源系统每tick更新
    * 结算所有水晶矿脉的采集产出
-   * @param {number} dt - tick间隔（秒）
+   * @param {number} delta - tick间隔（秒）
    */
-  update(dt) {
-    const tickFactor = dt * GAME.TICK_RATE; // 归一化到每tick
+  update(delta) {
+    const tickFactor = delta * GAME.TICK_RATE; // 归一化到每tick
 
     // ─── 水晶矿采集结算 ──────────────
     for (const patch of this.mineralPatches) {

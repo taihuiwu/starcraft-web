@@ -226,9 +226,9 @@ export default class CommandSystem {
 
   /**
    * 更新所有单位的命令执行状态
-   * @param {number} dt - tick间隔
+   * @param {number} delta - tick间隔
    */
-  update(dt) {
+  update(delta) {
     const gm = this.gameManager;
 
     for (const unit of gm.units) {
@@ -238,19 +238,19 @@ export default class CommandSystem {
 
       switch (cmd.type) {
         case COMMAND.MOVE:
-          this._executeMove(unit, dt);
+          this._executeMove(unit, delta);
           break;
         case COMMAND.ATTACK:
-          this._executeAttack(unit, dt);
+          this._executeAttack(unit, delta);
           break;
         case COMMAND.HOLD:
-          this._executeHold(unit, dt);
+          this._executeHold(unit, delta);
           break;
         case COMMAND.PATROL:
-          this._executePatrol(unit, dt);
+          this._executePatrol(unit, delta);
           break;
         case COMMAND.GATHER:
-          this._executeGather(unit, dt);
+          this._executeGather(unit, delta);
           break;
         case COMMAND.STOP:
           // 停止不需要持续执行
@@ -273,9 +273,9 @@ export default class CommandSystem {
   /**
    * 执行移动命令
    * @param {Object} unit
-   * @param {number} dt
-   */
-  _executeMove(unit, dt) {
+   * @param {number} delta
+  */
+  _executeMove(unit, delta) {
     const target = unit.currentCommand.position;
     if (!target) return;
 
@@ -293,21 +293,21 @@ export default class CommandSystem {
 
     // 计算移动方向和速度
     const speed = unit.speed || 2;
-    const moveX = (dx / dist) * speed * dt;
-    const moveZ = (dz / dist) * speed * dt;
+    const moveX = (dx / dist) * speed * delta;
+    const moveZ = (dz / dist) * speed * delta;
 
     unit.position.x += moveX;
     unit.position.z += moveZ;
-    unit.velocity = { x: moveX / dt, y: 0, z: moveZ / dt };
+    unit.velocity = { x: moveX / delta, y: 0, z: moveZ / delta };
     unit.facing = Math.atan2(dz, dx);
   }
 
   /**
    * 执行攻击命令
    * @param {Object} unit
-   * @param {number} dt
-   */
-  _executeAttack(unit, dt) {
+   * @param {number} delta
+  */
+  _executeAttack(unit, delta) {
     const cmd = unit.currentCommand;
     const gm = this.gameManager;
 
@@ -330,7 +330,7 @@ export default class CommandSystem {
         unit.attackTarget = target.id;
       } else {
         // 不在射程内，朝目标移动
-        this._moveTowards(unit, target.position, dt);
+        this._moveTowards(unit, target.position, delta);
       }
     }
     // 攻击移动：朝目标位置移动，途中自动索敌
@@ -351,21 +351,21 @@ export default class CommandSystem {
         unit.attackTarget = closest.id;
       } else {
         // 没有敌人，继续移动
-        this._moveTowards(unit, cmd.position, dt);
+        this._moveTowards(unit, cmd.position, delta);
       }
     }
     // 仅移动到位置
     else if (cmd.position) {
-      this._moveTowards(unit, cmd.position, dt);
+      this._moveTowards(unit, cmd.position, delta);
     }
   }
 
   /**
    * 执行驻守命令（停留在原位，自动攻击射程内敌人）
    * @param {Object} unit
-   * @param {number} dt
-   */
-  _executeHold(unit, dt) {
+   * @param {number} delta
+  */
+  _executeHold(unit, delta) {
     const gm = this.gameManager;
     // 搜索附近敌人
     const enemyTeam = unit.team === 1 ? 2 : 1;
@@ -389,9 +389,9 @@ export default class CommandSystem {
   /**
    * 执行巡逻命令（在两点之间来回移动）
    * @param {Object} unit
-   * @param {number} dt
-   */
-  _executePatrol(unit, dt) {
+   * @param {number} delta
+  */
+  _executePatrol(unit, delta) {
     const cmd = unit.currentCommand;
     if (!cmd.patrolTarget || !cmd.patrolOrigin) return;
 
@@ -423,16 +423,16 @@ export default class CommandSystem {
       // 到达目标点，反转方向
       cmd.atOrigin = !cmd.atOrigin;
     } else {
-      this._moveTowards(unit, target, dt);
+      this._moveTowards(unit, target, delta);
     }
   }
 
   /**
    * 执行采集命令
    * @param {Object} unit
-   * @param {number} dt
-   */
-  _executeGather(unit, dt) {
+   * @param {number} delta
+  */
+  _executeGather(unit, delta) {
     // 采集逻辑需要与ResourceManager配合
     // 这里提供基础框架，完整实现需要工人状态机
     const cmd = unit.currentCommand;
@@ -450,9 +450,9 @@ export default class CommandSystem {
    * 朝目标位置移动
    * @param {Object} unit
    * @param {Object} target - {x, y, z}
-   * @param {number} dt
-   */
-  _moveTowards(unit, target, dt) {
+   * @param {number} delta
+  */
+  _moveTowards(unit, target, delta) {
     const dx = target.x - unit.position.x;
     const dz = target.z - unit.position.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
@@ -460,12 +460,12 @@ export default class CommandSystem {
     if (dist < 0.3) return;
 
     const speed = unit.speed || 2;
-    const moveX = (dx / dist) * speed * dt;
-    const moveZ = (dz / dist) * speed * dt;
+    const moveX = (dx / dist) * speed * delta;
+    const moveZ = (dz / dist) * speed * delta;
 
     unit.position.x += moveX;
     unit.position.z += moveZ;
-    unit.velocity = { x: moveX / dt, y: 0, z: moveZ / dt };
+    unit.velocity = { x: moveX / delta, y: 0, z: moveZ / delta };
     unit.facing = Math.atan2(dz, dx);
   }
 

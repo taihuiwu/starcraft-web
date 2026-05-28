@@ -39,7 +39,7 @@ class AnimInstance {
   /**
    * @param {object} unit - 关联的单位对象（需包含 mesh 属性）
    * @param {string} animName - 动画名称
-   * @param {Function} updateFn - 更新回调 (instance, dt) => void
+   * @param {Function} updateFn - 更新回调 (instance, delta) => void
    * @param {number} duration - 动画持续时间（秒），0表示持续
    * @param {boolean} [loop=false] - 是否循环
    * @param {Function} [onComplete] - 动画完成回调
@@ -59,13 +59,13 @@ class AnimInstance {
 
   /**
    * 更新动画
-   * @param {number} dt - 帧间隔（秒）
-   * @returns {boolean} 是否已完成
-   */
-  update(dt) {
+   * @param {number} delta - 帧间隔（秒）
+  * @returns {boolean} 是否已完成
+ */
+  update(delta) {
     if (this.state !== ANIM_STATE.PLAYING) return true;
 
-    this.time += dt;
+    this.time += delta;
 
     if (this.duration > 0) {
       this.progress = clamp(this.time / this.duration, 0, 1);
@@ -85,7 +85,7 @@ class AnimInstance {
     }
 
     // 调用具体动画的更新逻辑
-    this._updateFn(this, dt);
+    this._updateFn(this, delta);
     return false;
   }
 }
@@ -229,14 +229,14 @@ export class AnimationSystem {
 
   /**
    * 每帧更新所有活跃动画
-   * @param {number} dt - 帧间隔（秒）
-   */
-  update(dt) {
+   * @param {number} delta - 帧间隔（秒）
+ */
+  update(delta) {
     for (const [unit, anims] of this._unitAnims) {
       // 从后往前遍历，方便移除已完成的动画
       for (let i = anims.length - 1; i >= 0; i--) {
         const anim = anims[i];
-        const finished = anim.update(dt);
+        const finished = anim.update(delta);
 
         if (finished) {
           anims.splice(i, 1);
@@ -266,7 +266,7 @@ export class AnimationSystem {
     const originalRotation = mesh.rotation.clone();
     const originalY = mesh.position.y;
 
-    return new AnimInstance(unit, 'death', (inst, dt) => {
+    return new AnimInstance(unit, 'death', (inst, _dt) => {
       const p = inst.progress;
 
       // 阶段1：缩小（0-30%）
@@ -324,7 +324,7 @@ export class AnimationSystem {
     const originalPos = mesh.position.clone();
     const originalRot = mesh.rotation.y;
 
-    return new AnimInstance(unit, 'attack', (inst, dt) => {
+    return new AnimInstance(unit, 'attack', (inst, _dt) => {
       const p = inst.progress;
 
       if (p < 0.2) {
@@ -361,7 +361,7 @@ export class AnimationSystem {
     const cfg = this.config.move;
     const originalY = mesh.position.y;
 
-    return new AnimInstance(unit, 'move', (inst, dt) => {
+    return new AnimInstance(unit, 'move', (inst, _dt) => {
       // 基于时间的正弦波摆动
       const t = inst.time * cfg.bobSpeed;
       const bob = Math.sin(t) * cfg.bobHeight;
@@ -400,7 +400,7 @@ export class AnimationSystem {
 
     const originalRotZ = arm ? arm.rotation.z : 0;
 
-    return new AnimInstance(unit, 'build', (inst, dt) => {
+    return new AnimInstance(unit, 'build', (inst, _dt) => {
       const t = inst.time * 6; // 摆动频率
 
       if (arm) {
@@ -422,7 +422,7 @@ export class AnimationSystem {
     const mesh = unit.mesh;
     const originalY = mesh.position.y;
 
-    return new AnimInstance(unit, 'idle', (inst, dt) => {
+    return new AnimInstance(unit, 'idle', (inst, _dt) => {
       // 缓慢的呼吸摆动
       const t = inst.time * 1.5;
       mesh.position.y = originalY + Math.sin(t) * 0.02;
@@ -460,11 +460,11 @@ export class AnimationSystem {
    * 更新所有骨骼动画混合器
    * 需要外部在主循环中调用
    * @param {THREE.AnimationMixer[]} mixers - 所有活跃的混合器
-   * @param {number} dt - 帧间隔
-   */
-  updateMixers(mixers, dt) {
+   * @param {number} delta - 帧间隔
+  */
+  updateMixers(mixers, delta) {
     for (const mixer of mixers) {
-      mixer.update(dt);
+      mixer.update(delta);
     }
   }
 

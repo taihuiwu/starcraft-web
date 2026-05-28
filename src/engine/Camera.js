@@ -219,15 +219,15 @@ export class RTSControls {
 
   /**
    * 每帧调用，更新摄像机位置
-   * @param {number} dt - 帧间隔时间（秒）
-   */
-  update(dt) {
+   * @param {number} delta - 帧间隔时间（秒）
+ */
+  update(delta) {
     // ─── Q/E 旋转 ───
     if (this._keys.rotateLeft) {
-      this.angle += this.rotateSpeed * dt;
+      this.angle += this.rotateSpeed * delta;
     }
     if (this._keys.rotateRight) {
-      this.angle -= this.rotateSpeed * dt;
+      this.angle -= this.rotateSpeed * delta;
     }
 
     // ─── WASD/方向键 平移 ───
@@ -251,13 +251,13 @@ export class RTSControls {
 
     if (moveDir.lengthSq() > 0) {
       moveDir.normalize();
-      this.targetPosition.addScaledVector(moveDir, this.panSpeed * dt);
+      this.targetPosition.addScaledVector(moveDir, this.panSpeed * delta);
       this._clampToMapBounds();
     }
 
     // ─── 边缘滚动 ───
     if (this.enableEdgeScroll && !this._isDragging) {
-      this._handleEdgeScroll(dt);
+      this._handleEdgeScroll(delta);
     }
 
     // ─── 平滑跟随 ───
@@ -265,7 +265,7 @@ export class RTSControls {
       const target = this._followTarget;
       if (this._followSmooth) {
         // 使用插值平滑跟随
-        this.targetPosition.lerp(target, 1 - Math.exp(-this.smoothSpeed * dt));
+        this.targetPosition.lerp(target, 1 - Math.exp(-this.smoothSpeed * delta));
       } else {
         this.targetPosition.copy(target);
       }
@@ -292,10 +292,10 @@ export class RTSControls {
   /**
    * 边缘滚动处理
    * 当鼠标靠近屏幕边缘时，自动向该方向平移摄像机
-   * @param {number} dt - 帧间隔
+   * @param {number} delta - 帧间隔
    * @private
    */
-  _handleEdgeScroll(dt) {
+  _handleEdgeScroll(delta) {
     const w = this.domElement.clientWidth || window.innerWidth;
     const h = this.domElement.clientHeight || window.innerHeight;
     const mx = this._mouseClientX;
@@ -316,8 +316,8 @@ export class RTSControls {
       const forward = new THREE.Vector3(Math.sin(this.angle), 0, Math.cos(this.angle));
       const right = new THREE.Vector3(Math.cos(this.angle), 0, -Math.sin(this.angle));
 
-      this.targetPosition.addScaledVector(right, edgeX * this.edgeScrollSpeed * dt);
-      this.targetPosition.addScaledVector(forward, edgeZ * this.edgeScrollSpeed * dt);
+      this.targetPosition.addScaledVector(right, edgeX * this.edgeScrollSpeed * delta);
+      this.targetPosition.addScaledVector(forward, edgeZ * this.edgeScrollSpeed * delta);
 
       this._clampToMapBounds();
     }

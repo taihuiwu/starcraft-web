@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════
 
 import { RACE, COMMAND, AI_STATE } from '../../shared/Constants.js';
-import { distance2D } from '../../shared/MathUtils.js';
+import { distance2D, effectiveHP } from '../../shared/MathUtils.js';
 import { eventBus } from '../../shared/EventBus.js';
 
 // ── AI 战略阶段 ──
@@ -983,7 +983,7 @@ export class SmartAI {
     return units
       .filter(u => u.playerId === pid && u.attack && !u.isWorker)
       .reduce((score, u) => {
-        const hp = (u.hp || 0) + (u.shield || 0);
+        const hp = effectiveHP(u);
         const atk = (u.attack?.damage || 0) * 2;
         return score + hp + atk;
       }, 0);
@@ -997,7 +997,7 @@ export class SmartAI {
     return (snapshot.enemyUnits || [])
       .filter(u => u.attack && !u.isWorker)
       .reduce((score, u) => {
-        const hp = (u.hp || 0) + (u.shield || 0);
+        const hp = effectiveHP(u);
         const atk = (u.attack?.damage || 0) * 2;
         return score + hp + atk;
       }, 0);

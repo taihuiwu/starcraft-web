@@ -6,6 +6,7 @@
 
 import { ATTACK_TYPE, DAMAGE_TABLE, EVENTS } from '../shared/Constants.js';
 import { eventBus } from '../shared/EventBus.js';
+import { effectiveHP } from '../shared/MathUtils.js';
 
 export default class CombatSystem {
   /**
@@ -40,9 +41,9 @@ export default class CombatSystem {
   /**
    * 战斗系统每tick更新
    * 遍历所有有攻击目标的单位，检查攻击冷却并执行伤害计算
-   * @param {number} dt - tick间隔（秒）
+   * @param {number} delta - tick间隔（秒）
    */
-  update(dt) {
+  update(delta) {
     const gm = this.gameManager;
 
     for (const unit of gm.units) {
@@ -64,7 +65,7 @@ export default class CombatSystem {
       }
 
       // ─── 攻击冷却计时 ────────────────
-      unit.attackCooldown -= dt;
+      unit.attackCooldown -= delta;
 
       if (unit.attackCooldown <= 0) {
         // 冷却完毕，执行攻击
@@ -76,7 +77,7 @@ export default class CombatSystem {
     }
 
     for (const effect of this.attackEffects) {
-      effect.lifetime += dt;
+      effect.lifetime += delta;
     }
     // ─── 就地清理已完成的攻击特效（避免每帧分配新数组） ────────
     for (let i = this.attackEffects.length - 1; i >= 0; i--) {
@@ -288,3 +289,5 @@ export default class CombatSystem {
     return this.attackEffects.filter(e => e.lifetime < e.maxLifetime);
   }
 }
+
+export { CombatSystem };

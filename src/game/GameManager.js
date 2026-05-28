@@ -294,13 +294,13 @@ export default class GameManager {
   /**
    * 游戏逻辑更新（每帧调用）
    * 按SC1固定tick率累积时间，达到一个tick则执行一次逻辑更新
-   * @param {number} dt - 帧间隔时间（秒）
+   * @param {number} delta - 帧间隔时间（秒）
    */
-  update(dt) {
+  update(delta) {
     // SC1使用24tick/秒的固定逻辑帧率
     // 将实际时间转换为游戏tick
     const tickInterval = 1 / GAME.TICK_RATE;
-    this._tickAccumulator = (this._tickAccumulator || 0) + dt;
+    this._tickAccumulator = (this._tickAccumulator || 0) + delta;
 
     // 固定步长更新：确保逻辑帧率恒定
     while (this._tickAccumulator >= tickInterval) {
