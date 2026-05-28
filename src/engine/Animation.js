@@ -17,6 +17,8 @@ export const ANIM_TYPE = {
   IDLE: 'idle',
   DEATH: 'death',
   ATTACK: 'attack',
+  ATTACK_AIR: 'attack_air',       // 对空攻击动画（仰角更大）
+  ATTACK_GROUND: 'attack_ground', // 对地攻击动画（标准俯角）
   MOVE: 'move',
   BUILD: 'build',
   HURT: 'hurt',
@@ -168,6 +170,12 @@ export class AnimationSystem {
         instance = this._createDeathAnimation(unit, onComplete);
         break;
       case 'attack':
+        instance = this._createAttackAnimation(unit, onComplete);
+        break;
+      case 'attack_air':
+        instance = this._createAirToAirAttackAnimation(unit, onComplete);
+        break;
+      case 'attack_ground':
         instance = this._createAttackAnimation(unit, onComplete);
         break;
       case 'move':
@@ -347,6 +355,51 @@ export class AnimationSystem {
       // 确保完全恢复
       mesh.position.copy(originalPos);
       mesh.rotation.y = originalRot;
+      if (onComplete) onComplete(inst);
+    });
+  }
+
+  /**
+   * 创建对空攻击动画
+   * 效果：机身仰起 → 发射导弹（向上微抬）→ 恢复
+   * 与普通攻击的区别：旋转方向朝上（仰角），用于空对空战斗
+   * @private
+   */
+  _createAirToAirAttackAnimation(unit, onComplete) {
+    const mesh = unit.mesh;
+    const cfg = this.config.attack;
+    const originalPos = mesh.position.clone();
+    const originalRotX = mesh.rotation.x;
+    const originalRotY = mesh.rotation.y;
+    const originalRotZ = mesh.rotation.z;
+
+    return new AnimInstance(unit, 'attack_air', (inst, _dt) => {
+      const p = inst.progress;
+
+      if (p < 0.2) {
+        // 蓄力阶段：机身上仰（仰角准备）
+        const t = p / 0.2;
+        mesh.rotation.x = lerp(originalRotX, originalRotX - 0.15, t);
+        mesh.position.y = lerp(originalPos.y, originalPos.y + 0.05, t);
+      } else if (p < 0.5) {
+        // 发射阶段：机身微微下沉（导弹后坐力），然后快速回弹
+        const t = (p - 0.2) / 0.3;
+        mesh.rotation.x = lerp(originalRotX - 0.15, originalRotX + 0.08, t);
+        mesh.position.y = lerp(originalPos.y + 0.05, originalPos.y - 0.03, t);
+        mesh.rotation.z = originalRotZ + lerp(0, 0.04, t); // 微微倾斜
+      } else {
+        // 恢复阶段：弹回原位
+        const t = (p - 0.5) / 0.5;
+        mesh.rotation.x = lerp(originalRotX + 0.08, originalRotX, t);
+        mesh.rotation.z = lerp(originalRotZ + 0.04, originalRotZ, t);
+        mesh.position.y = lerp(originalPos.y - 0.03, originalPos.y, t);
+      }
+    }, cfg.duration * 1.1, false, (inst) => {
+      // 确保完全恢复
+      mesh.position.copy(originalPos);
+      mesh.rotation.x = originalRotX;
+      mesh.rotation.y = originalRotY;
+      mesh.rotation.z = originalRotZ;
       if (onComplete) onComplete(inst);
     });
   }

@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // StarCraft Web - 音频总管理器 (AudioManager)
 // 基于 Web Audio API 的完整音频管理系统
-// 功能：音量控制、音频池、空间音效、淡入淡出、事件驱动
+// 功能：音量控制、音频池、真3D空间音效、淡入淡出、事件驱动、资源管理
 // ═══════════════════════════════════════════════════════════════
 
 import { eventBus } from '../shared/EventBus.js';
@@ -27,10 +27,11 @@ export const AUDIO_CATEGORY = {
  * 核心职责：
  * 1. 管理 AudioContext 生命周期
  * 2. 提供分层音量控制（主音量 → 分类音量 → 空间音量）
- * 3. 音频池管理：预加载音效Buffer，播放时复用SourceNode
- * 4. 空间音效：根据声源3D位置计算音量衰减和声道平衡
+ * 3. 音频池管理：预加载音效Buffer，LRU淘汰策略
+ * 4. 真3D空间音效：PannerNode + 距离衰减 + 低通滤波
  * 5. 背景音乐淡入淡出交叉切换
  * 6. 事件驱动：监听游戏事件自动播放对应音效
+ * 7. 资源追踪与统计
  */
 class AudioManagerClass {
   constructor() {
@@ -58,7 +59,7 @@ class AudioManagerClass {
       ui: 0.6,
     };
 
-    // ─── 音频池：预加载的AudioBuffer缓存 ───
+    // ─── 音频池：预加载的AudioBuffer缓存（LRU策略）───
     /** @type {Map<string, AudioBuffer>} 音效名称 → 缓冲区映射 */
     this.bufferPool = new Map();
     /** @type {number} 池最大容量（防止内存溢出） */
@@ -81,6 +82,9 @@ class AudioManagerClass {
     this.maxDistance = 50;
     /** @type {number} 衰减最小距离（小于此距离音量不变） */
     this.minDistance = 5;
+    /** @type {number} 距离低通滤波的截止频率范围（远处声音更闷） */
+    this.distanceFilterMax = 12000; // 近处：12kHz
+    this.distanceFilterMin = 400;   // 远处：400Hz
     /** @type {number} 摄像机X坐标（由外部更新） */
     this.cameraX = 0;
     /** @type {number} 摄像机Y坐标（由外部更新） */
@@ -101,6 +105,15 @@ class AudioManagerClass {
     // ─── 已注册的事件取消函数 ───
     /** @type {Function[]} */
     this._unsubscribers = [];
+
+    // ─── 资源统计 ───
+    /** @type {{totalPlayed: number, totalGenerated: number, poolHits: number, poolMisses: number}} */
+    this.stats = {
+      totalPlayed: 0,
+      totalGenerated: 0,
+      poolHits: 0,
+      poolMisses: 0,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -231,29 +244,37 @@ class AudioManagerClass {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 音频池管理
+  // 音频池管理（LRU策略 + 资源追踪）
   // ═══════════════════════════════════════════════════════════
 
   /**
    * 获取音频缓冲区（优先从池中获取，否则实时生成）
+   * 使用LRU策略：每次命中时将key移到末尾，淘汰时删除最旧的
    * @param {string} name - 音效/音乐名称
    * @returns {AudioBuffer|null} 音频缓冲区
    */
   getBuffer(name) {
     // 从缓存池中查找
     if (this.bufferPool.has(name)) {
-      return this.bufferPool.get(name);
+      // LRU：移到末尾（删除后重新插入）
+      const buffer = this.bufferPool.get(name);
+      this.bufferPool.delete(name);
+      this.bufferPool.set(name, buffer);
+      this.stats.poolHits++;
+      return buffer;
     }
 
     // 实时生成并缓存
     const buffer = this._generateBuffer(name);
     if (buffer) {
-      // 池满时清理最旧的条目
+      // LRU淘汰：池满时删除最旧的条目
       if (this.bufferPool.size >= this.poolMaxSize) {
         const oldestKey = this.bufferPool.keys().next().value;
         this.bufferPool.delete(oldestKey);
       }
       this.bufferPool.set(name, buffer);
+      this.stats.totalGenerated++;
+      this.stats.poolMisses++;
     }
     return buffer;
   }
@@ -290,12 +311,14 @@ class AudioManagerClass {
    */
   preload(names) {
     if (!this.ctx) return;
+    let loaded = 0;
     for (const name of names) {
       if (!this.bufferPool.has(name)) {
         this.getBuffer(name);
+        loaded++;
       }
     }
-    console.log(`[AudioManager] 预加载 ${names.length} 个音频`);
+    console.log(`[AudioManager] 预加载 ${loaded}/${names.length} 个音频`);
   }
 
   /**
@@ -303,6 +326,35 @@ class AudioManagerClass {
    */
   clearPool() {
     this.bufferPool.clear();
+  }
+
+  /**
+   * 获取音频系统资源统计
+   * @returns {Object}
+   */
+  getStats() {
+    return {
+      ...this.stats,
+      poolSize: this.bufferPool.size,
+      poolMaxSize: this.poolMaxSize,
+      activeSFX: this.activeSFX.size,
+      maxConcurrentSFX: this.maxConcurrentSFX,
+      memoryEstimateKB: this._estimatePoolMemory(),
+    };
+  }
+
+  /**
+   * 估算音频池占用内存（KB）
+   * @returns {number}
+   * @private
+   */
+  _estimatePoolMemory() {
+    let totalSamples = 0;
+    for (const buffer of this.bufferPool.values()) {
+      totalSamples += buffer.length * buffer.numberOfChannels;
+    }
+    // 每个sample 4 bytes (Float32)
+    return Math.round((totalSamples * 4) / 1024);
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -331,6 +383,7 @@ class AudioManagerClass {
     const buffer = this.getBuffer(name);
     if (!buffer) return null;
 
+    this.stats.totalPlayed++;
     return this._playBuffer(buffer, this.sfxGain, options);
   }
 
@@ -384,6 +437,7 @@ class AudioManagerClass {
     const buffer = this.getBuffer(name);
     if (!buffer) return null;
 
+    this.stats.totalPlayed++;
     return this._playBuffer(buffer, this.voiceGain, options);
   }
 
@@ -399,6 +453,7 @@ class AudioManagerClass {
     const buffer = this.getBuffer(name);
     if (!buffer) return null;
 
+    this.stats.totalPlayed++;
     return this._playBuffer(buffer, this.uiGain, options);
   }
 
@@ -408,6 +463,8 @@ class AudioManagerClass {
 
   /**
    * 播放音频缓冲区（通用方法）
+   * 支持真3D空间音效（PannerNode）和简单立体声平衡
+   *
    * @param {AudioBuffer} buffer - 音频缓冲区
    * @param {GainNode} categoryGain - 连接到的分类音量节点
    * @param {Object} options - 播放选项
@@ -421,6 +478,7 @@ class AudioManagerClass {
       sourceX = null,
       sourceY = null,
       loop = false,
+      usePanner = true, // 是否使用真3D PannerNode
     } = options;
 
     // 创建播放节点
@@ -432,17 +490,51 @@ class AudioManagerClass {
     const gainNode = this.ctx.createGain();
     let finalVolume = volume;
 
-    // 如果提供了世界坐标，计算空间音效
     if (sourceX !== null && sourceY !== null) {
+      // ─── 真3D空间音效：PannerNode + 距离低通滤波 ───
       const spatial = this._calculateSpatialAudio(sourceX, sourceY);
       finalVolume *= spatial.volume;
-      // 创建声相节点（左右声道平衡）
-      const panner = this.ctx.createStereoPanner();
-      panner.pan.value = spatial.pan;
-      source.connect(gainNode);
-      gainNode.connect(panner);
-      panner.connect(categoryGain);
+
+      if (usePanner && this.ctx.createPanner) {
+        // 使用PannerNode实现真3D定位
+        const panner = this.ctx.createPanner();
+        panner.panningModel = 'HRTF'; // 高质量头部相关传输函数
+        panner.distanceModel = 'linear';
+        panner.refDistance = this.minDistance;
+        panner.maxDistance = this.maxDistance;
+        panner.rolloffFactor = 1.0;
+        panner.coneInnerAngle = 360;
+        panner.coneOuterAngle = 360;
+        panner.coneOuterGain = 0;
+
+        // 将2D世界坐标转换为3D位置
+        // X轴：左右，Y轴：前后，Z轴：上下（固定为0）
+        const x = spatial.x3d;  // -1 ~ 1
+        const z = -spatial.y3d; // Z为前后（负数=前方）
+        panner.positionX.setValueAtTime(x * this.maxDistance, this.ctx.currentTime);
+        panner.positionY.setValueAtTime(0, this.ctx.currentTime);
+        panner.positionZ.setValueAtTime(z * this.maxDistance, this.ctx.currentTime);
+
+        // 距离低通滤波：远处声音更闷
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = this._distanceToFilterFreq(spatial.normalizedDistance);
+        filter.Q.value = 0.7;
+
+        source.connect(gainNode);
+        gainNode.connect(filter);
+        filter.connect(panner);
+        panner.connect(categoryGain);
+      } else {
+        // Fallback: StereoPannerNode
+        const panner = this.ctx.createStereoPanner();
+        panner.pan.value = spatial.pan;
+        source.connect(gainNode);
+        gainNode.connect(panner);
+        panner.connect(categoryGain);
+      }
     } else {
+      // 无空间位置：直接连接
       source.connect(gainNode);
       gainNode.connect(categoryGain);
     }
@@ -461,7 +553,7 @@ class AudioManagerClass {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 空间音效
+  // 空间音效（真3D定位 + 距离衰减 + 低通滤波）
   // ═══════════════════════════════════════════════════════════
 
   /**
@@ -478,7 +570,7 @@ class AudioManagerClass {
    * 根据声源与摄像机的位置计算空间音效参数
    * @param {number} sourceX - 声源X坐标
    * @param {number} sourceY - 声源Y坐标
-   * @returns {{ volume: number, pan: number }} 音量衰减系数和声道平衡
+   * @returns {{ volume: number, pan: number, x3d: number, y3d: number, normalizedDistance: number }}
    * @private
    */
   _calculateSpatialAudio(sourceX, sourceY) {
@@ -486,6 +578,9 @@ class AudioManagerClass {
     const dx = sourceX - this.cameraX;
     const dy = sourceY - this.cameraY;
     const distance = Math.sqrt(dx * dx + dy * dy);
+
+    // 归一化距离 (0 = 最近, 1 = 最远)
+    const normalizedDistance = Math.min(1, distance / this.maxDistance);
 
     // 音量衰减：minDistance内保持满音量，之后线性衰减到maxDistance时为0
     let volume = 1.0;
@@ -496,10 +591,28 @@ class AudioManagerClass {
     }
 
     // 声道平衡：基于声源在屏幕中的水平偏移
-    // -1 表示全左，1 表示全右
     const normalizedX = Math.max(-1, Math.min(1, dx / this.maxDistance));
 
-    return { volume, pan: normalizedX };
+    // 3D坐标归一化（用于PannerNode）
+    const x3d = normalizedX;
+    const y3d = Math.max(-1, Math.min(1, dy / this.maxDistance));
+
+    return { volume, pan: normalizedX, x3d, y3d, normalizedDistance };
+  }
+
+  /**
+   * 将归一化距离转换为低通滤波截止频率
+   * 近处(0) → 高频通过(12kHz)，远处(1) → 低频截断(400Hz)
+   * @param {number} normalizedDistance - 0~1
+   * @returns {number} 截止频率(Hz)
+   * @private
+   */
+  _distanceToFilterFreq(normalizedDistance) {
+    // 使用指数曲线使过渡更自然
+    const t = normalizedDistance;
+    const freq = this.distanceFilterMin *
+      Math.pow(this.distanceFilterMax / this.distanceFilterMin, 1 - t);
+    return freq;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -570,8 +683,6 @@ class AudioManagerClass {
     // 旧音乐淡出
     if (this.currentMusic) {
       const oldSource = this.currentMusic;
-      // 需要在旧音乐的输出路径上插入淡出gain节点
-      // 由于旧音乐已连接到 musicGain，我们断开并重新连接
       try {
         oldSource.disconnect();
         const oldGain = this.ctx.createGain();
@@ -707,7 +818,6 @@ class AudioManagerClass {
     this._unsubscribers.push(
       eventBus.on(EVENTS.UNIT_DAMAGE, (data) => {
         if (data?.position) {
-          // 根据攻击类型选择不同音效
           if (data.isProjectile) {
             this.playSFX('gunshot', {
               sourceX: data.position.x,
@@ -752,6 +862,19 @@ class AudioManagerClass {
     this._unsubscribers.push(
       eventBus.on(EVENTS.TECH_COMPLETE, () => {
         this.playSFX('research_complete');
+      })
+    );
+
+    // 投射物发射
+    this._unsubscribers.push(
+      eventBus.on(EVENTS.PROJECTILE_FIRED, (data) => {
+        if (data?.position) {
+          this.playSFX('gunshot', {
+            sourceX: data.position.x,
+            sourceY: data.position.y,
+            volume: 0.6,
+          });
+        }
       })
     );
 
@@ -806,6 +929,13 @@ class AudioManagerClass {
     this.musicGain = null;
     this.voiceGain = null;
     this.uiGain = null;
+
+    this.stats = {
+      totalPlayed: 0,
+      totalGenerated: 0,
+      poolHits: 0,
+      poolMisses: 0,
+    };
 
     console.log('[AudioManager] 音频系统已销毁');
   }

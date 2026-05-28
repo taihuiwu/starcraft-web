@@ -29,6 +29,26 @@ const SYNC_CONFIG = {
   maxPredictionError: 0.1,
   /** 状态压缩阈值（超过此值的数值使用差分编码） */
   compressionThreshold: 100,
+  /** ── 插值/外推配置 ── */
+  /** 插值延迟（ms）— 渲染落后实时多少毫秒进行插值 */
+  interpolationDelay: 100,
+  /** 插值缓冲区最大快照数 */
+  interpolationBufferSize: 30,
+  /** 是否默认启用插值 */
+  interpolationEnabled: true,
+  /** 是否默认启用外推 */
+  extrapolationEnabled: true,
+  /** 最大外推时间（ms）— 超过此时间不再外推，防止误差过大 */
+  maxExtrapolationTime: 500,
+  /** 速度平滑系数（0-1），越大越灵敏 */
+  velocitySmoothing: 0.3,
+  /** ── 延迟补偿配置 ── */
+  /** 是否启用延迟补偿 */
+  delayCompensationEnabled: true,
+  /** 状态历史缓冲大小（帧数） */
+  stateHistorySize: 120,
+  /** 最大回溯时间（ms） */
+  maxLookbackTime: 500,
 };
 
 /**
@@ -255,6 +275,580 @@ class SnapshotCompressor {
 // ═══════════════════════════════════════════
 // 同步管理器
 // ═══════════════════════════════════════════
+// ── 快速深拷贝（模块级工具函数，供插值/外推类共用） ──
+function _fastClone(obj) {
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) {
+    const arr = new Array(obj.length);
+    for (let i = 0; i < obj.length; i++) arr[i] = _fastClone(obj[i]);
+    return arr;
+  }
+  const keys = Object.keys(obj);
+  const result = {};
+  for (let i = 0; i < keys.length; i++) {
+    result[keys[i]] = _fastClone(obj[keys[i]]);
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════
+// 插值缓冲区
+// ═══════════════════════════════════════════
+
+/**
+ * 插值缓冲区 - 存储远端快照并在渲染时进行线性插值
+ *
+ * 工作原理:
+ * 1. 收到远端快照后放入环形缓冲区（按时间戳排序）
+ * 2. 渲染时，取 renderTime - interpolationDelay 对应的两个相邻快照
+ * 3. 在两者之间做线性插值（lerp），实现平滑过渡
+ *
+ * 渲染比实时落后 interpolationDelay 毫秒，以此换取位置平滑度
+ *
+ * @example
+ * const buf = new InterpolationBuffer({ interpolationDelay: 100 });
+ * buf.addSnapshot(snapshotA, timestampA);
+ * buf.addSnapshot(snapshotB, timestampB);
+ * const smoothState = buf.getInterpolatedState(Date.now());
+ */
+class InterpolationBuffer {
+  /**
+   * @param {object} config
+   * @param {boolean} [config.interpolationEnabled=true]
+   * @param {number}  [config.interpolationDelay=100]  延迟(ms)
+   * @param {number}  [config.maxBufferSize=30]        缓冲大小
+   */
+  constructor(config = {}) {
+    /** @type {boolean} 是否启用 */
+    this.interpolationEnabled = config.interpolationEnabled !== false;
+    /** @type {number} 插值延迟(ms) */
+    this.interpolationDelay = config.interpolationDelay || SYNC_CONFIG.interpolationDelay;
+    /** @type {number} 最大缓冲大小 */
+    this.maxBufferSize = config.maxBufferSize || SYNC_CONFIG.interpolationBufferSize;
+    /** @type {Array<{timestamp: number, snapshot: object}>} 缓冲区 */
+    this.buffer = [];
+  }
+
+  /**
+   * 添加快照到缓冲区
+   * @param {object} snapshot - 服务器快照
+   * @param {number} [timestamp] - 快照时间戳(ms)，默认 Date.now()
+   */
+  addSnapshot(snapshot, timestamp = Date.now()) {
+    if (!this.interpolationEnabled || !snapshot) return;
+
+    this.buffer.push({ timestamp, snapshot });
+
+    // 按时间戳排序（保证顺序）
+    if (this.buffer.length >= 2 &&
+        this.buffer[this.buffer.length - 1].timestamp < this.buffer[this.buffer.length - 2].timestamp) {
+      this.buffer.sort((a, b) => a.timestamp - b.timestamp);
+    }
+
+    // 裁剪超过最大大小
+    while (this.buffer.length > this.maxBufferSize) {
+      this.buffer.shift();
+    }
+  }
+
+  /**
+   * 获取插值后的游戏状态
+   * @param {number} renderTime - 当前渲染时间戳(ms)
+   * @returns {object|null} 插值后的快照状态
+   */
+  getInterpolatedState(renderTime) {
+    if (!this.interpolationEnabled || this.buffer.length === 0) return null;
+
+    // 只有一个快照时直接返回
+    if (this.buffer.length === 1) return this.buffer[0].snapshot;
+
+    const targetTime = renderTime - this.interpolationDelay;
+    const bracket = this._findBracketingSnapshots(targetTime);
+
+    if (!bracket) {
+      // 目标时间超出缓冲范围，返回最近的快照
+      return this.buffer[this.buffer.length - 1].snapshot;
+    }
+
+    const { before, after } = bracket;
+    const dt = after.timestamp - before.timestamp;
+    if (dt <= 0) return after.snapshot;
+
+    // alpha: 0 = 完全在 before，1 = 完全在 after
+    const alpha = Math.max(0, Math.min(1, (targetTime - before.timestamp) / dt));
+    return this._interpolateSnapshots(before.snapshot, after.snapshot, alpha);
+  }
+
+  /**
+   * 查找包围目标时间的两个快照
+   * @private
+   * @param {number} targetTime
+   * @returns {{before: object, after: object}|null}
+   */
+  _findBracketingSnapshots(targetTime) {
+    let before = null;
+    let afterIdx = -1;
+
+    for (let i = 0; i < this.buffer.length; i++) {
+      if (this.buffer[i].timestamp <= targetTime) {
+        before = this.buffer[i];
+      } else if (afterIdx === -1) {
+        afterIdx = i;
+      }
+    }
+
+    if (before && afterIdx !== -1) {
+      return { before, after: this.buffer[afterIdx] };
+    }
+
+    // 目标时间在所有快照之前 → 用最早的两个
+    if (afterIdx !== -1 && afterIdx >= 1) {
+      return { before: this.buffer[afterIdx - 1], after: this.buffer[afterIdx] };
+    }
+
+    return null;
+  }
+
+  /**
+   * 线性插值两个快照
+   * @private
+   */
+  _interpolateSnapshots(snapA, snapB, alpha) {
+    if (!snapA || !snapA.state) return snapB;
+    if (!snapB || !snapB.state) return snapA;
+
+    const result = _fastClone(snapA);
+
+    // 插值单位位置和属性
+    const unitsA = snapA.state.units || [];
+    const unitsBMap = new Map();
+    for (const u of (snapB.state.units || [])) {
+      unitsBMap.set(u.id, u);
+    }
+
+    const resultUnits = result.state.units || [];
+    for (let i = 0; i < resultUnits.length; i++) {
+      const uA = resultUnits[i];
+      const uB = unitsBMap.get(uA.id);
+      if (!uB) continue;
+
+      // 插值位置
+      if (uA.position && uB.position) {
+        resultUnits[i] = {
+          ...uA,
+          position: {
+            x: uA.position.x + (uB.position.x - uA.position.x) * alpha,
+            z: uA.position.z + (uB.position.z - uA.position.z) * alpha,
+          },
+        };
+      }
+      // 插值血量/护盾（可选，使过渡更平滑）
+      if (uA.hp !== undefined && uB.hp !== undefined) {
+        resultUnits[i] = resultUnits[i] || { ...uA };
+        resultUnits[i].hp = uA.hp + (uB.hp - uA.hp) * alpha;
+      }
+      if (uA.shield !== undefined && uB.shield !== undefined) {
+        resultUnits[i] = resultUnits[i] || { ...uA };
+        resultUnits[i].shield = uA.shield + (uB.shield - uA.shield) * alpha;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * 清空缓冲区
+   */
+  clear() {
+    this.buffer.length = 0;
+  }
+
+  /**
+   * 获取缓冲区信息
+   * @returns {object}
+   */
+  getDebugInfo() {
+    return {
+      enabled: this.interpolationEnabled,
+      delay: this.interpolationDelay,
+      bufferSize: this.buffer.length,
+      maxBufferSize: this.maxBufferSize,
+    };
+  }
+}
+
+// ═══════════════════════════════════════════
+// 外推引擎
+// ═══════════════════════════════════════════
+
+/**
+ * 外推引擎 - 在快照间隔期间根据速度和方向预测单位位置
+ *
+ * 工作原理:
+ * 1. 维护最近两次快照，计算每个单位的速度向量 (vx, vz)
+ * 2. 渲染时，用 lastSnapshot + velocity × dt 预测当前位置
+ * 3. 速度带平滑（EMA），防止抖动
+ * 4. 外推时间有上限，超过后停止外推并回退到最近快照位置
+ *
+ * 适用场景: 延迟较低但快照间隔较长，或插值缓冲尚未填满时
+ *
+ * @example
+ * const engine = new ExtrapolationEngine({ maxExtrapolationTime: 300 });
+ * engine.updateSnapshot(snapshotA, timestampA);
+ * engine.updateSnapshot(snapshotB, timestampB);
+ * const predicted = engine.getExtrapolatedState(Date.now());
+ */
+class ExtrapolationEngine {
+  /**
+   * @param {object} config
+   * @param {boolean} [config.extrapolationEnabled=true]
+   * @param {number}  [config.maxExtrapolationTime=500]  最大外推时间(ms)
+   * @param {number}  [config.velocitySmoothing=0.3]     速度EMA平滑系数(0-1)
+   */
+  constructor(config = {}) {
+    /** @type {boolean} 是否启用 */
+    this.enabled = config.extrapolationEnabled !== false;
+    /** @type {number} 最大外推时间(ms) */
+    this.maxExtrapolationTime = config.maxExtrapolationTime || SYNC_CONFIG.maxExtrapolationTime;
+    /** @type {number} 速度平滑系数 */
+    this.velocitySmoothing = config.velocitySmoothing || SYNC_CONFIG.velocitySmoothing;
+
+    /** @type {{snapshot: object, timestamp: number}|null} 前一快照 */
+    this.previousSnapshot = null;
+    /** @type {{snapshot: object, timestamp: number}|null} 当前快照 */
+    this.currentSnapshot = null;
+    /** @type {Map<number, {vx: number, vz: number, timestamp: number}>} 单位速度缓存 */
+    this.velocityCache = new Map();
+  }
+
+  /**
+   * 更新快照（每次收到新快照时调用）
+   * @param {object} snapshot - 服务器快照
+   * @param {number} [timestamp] - 时间戳(ms)
+   */
+  updateSnapshot(snapshot, timestamp = Date.now()) {
+    if (!snapshot) return;
+
+    this.previousSnapshot = this.currentSnapshot;
+    this.currentSnapshot = { snapshot, timestamp };
+
+    // 有前后两个快照时更新速度
+    if (this.previousSnapshot) {
+      this._updateVelocities(this.previousSnapshot, this.currentSnapshot);
+    }
+  }
+
+  /**
+   * 获取外推后的游戏状态
+   * @param {number} renderTime - 当前渲染时间戳(ms)
+   * @returns {object|null} 外推后的快照状态
+   */
+  getExtrapolatedState(renderTime) {
+    if (!this.enabled || !this.currentSnapshot) return null;
+
+    const dtSeconds = (renderTime - this.currentSnapshot.timestamp) / 1000;
+
+    // 如果 renderTime 比快照时间还早，直接返回快照
+    if (dtSeconds <= 0) return this.currentSnapshot.snapshot;
+
+    // 裁剪外推时间
+    const maxDt = this.maxExtrapolationTime / 1000;
+    const clampedDt = Math.min(dtSeconds, maxDt);
+
+    const snapshot = this.currentSnapshot.snapshot;
+    if (!snapshot || !snapshot.state) return snapshot;
+
+    // 计算衰减因子：外推时间越长，信心越低，速度越衰减
+    const decay = 1 - (clampedDt / maxDt) * 0.5; // 50% 衰减在最大时间点
+
+    const result = _fastClone(snapshot);
+    const resultUnits = result.state.units || [];
+
+    for (let i = 0; i < resultUnits.length; i++) {
+      const u = resultUnits[i];
+      const vel = this.velocityCache.get(u.id);
+      if (vel && u.position) {
+        resultUnits[i] = {
+          ...u,
+          position: {
+            x: u.position.x + vel.vx * clampedDt * decay,
+            z: u.position.z + vel.vz * clampedDt * decay,
+          },
+        };
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * 基于前后快照更新所有单位的速度
+   * @private
+   */
+  _updateVelocities(prev, curr) {
+    const dt = (curr.timestamp - prev.timestamp) / 1000;
+    if (dt <= 0) return;
+
+    // 建立前一帧单位映射
+    const prevUnitsMap = new Map();
+    for (const u of (prev.snapshot.state?.units || [])) {
+      prevUnitsMap.set(u.id, u);
+    }
+
+    // 更新每个单位的速度
+    for (const u of (curr.snapshot.state?.units || [])) {
+      const prevU = prevUnitsMap.get(u.id);
+      if (!prevU || !prevU.position || !u.position) continue;
+
+      const rawVx = (u.position.x - prevU.position.x) / dt;
+      const rawVz = (u.position.z - prevU.position.z) / dt;
+
+      const cached = this.velocityCache.get(u.id);
+      if (cached) {
+        // 指数移动平均平滑
+        const s = this.velocitySmoothing;
+        cached.vx = cached.vx + (rawVx - cached.vx) * s;
+        cached.vz = cached.vz + (rawVz - cached.vz) * s;
+        cached.timestamp = curr.timestamp;
+      } else {
+        this.velocityCache.set(u.id, {
+          vx: rawVx,
+          vz: rawVz,
+          timestamp: curr.timestamp,
+        });
+      }
+    }
+
+    // 清理不再存在的单位速度缓存
+    const currIds = new Set();
+    for (const u of (curr.snapshot.state?.units || [])) {
+      currIds.add(u.id);
+    }
+    for (const [id] of this.velocityCache) {
+      if (!currIds.has(id)) {
+        this.velocityCache.delete(id);
+      }
+    }
+  }
+
+  /**
+   * 清空状态
+   */
+  clear() {
+    this.previousSnapshot = null;
+    this.currentSnapshot = null;
+    this.velocityCache.clear();
+  }
+
+  /**
+   * 获取调试信息
+   * @returns {object}
+   */
+  getDebugInfo() {
+    return {
+      enabled: this.enabled,
+      maxExtrapolationTime: this.maxExtrapolationTime,
+      velocitySmoothing: this.velocitySmoothing,
+      cachedUnitCount: this.velocityCache.size,
+      hasSnapshot: !!this.currentSnapshot,
+    };
+  }
+}
+
+// ═══════════════════════════════════════════
+// 延迟补偿
+// ═══════════════════════════════════════════
+
+/**
+ * 延迟补偿器 - 保存历史状态，支持回溯到任意时间点
+ *
+ * 典型用途:
+ * - 玩家 A 在 t0 发起攻击，但因为网络延迟，服务器在 t0+latency 才收到
+ * - 此时目标可能已经移动了 latency 的距离
+ * - 延迟补偿器回溯到 t0 时的状态，用那时的位置做命中判定
+ *
+ * @example
+ * const dc = new DelayCompensation({ maxLookbackTime: 500 });
+ * dc.addState(snapshot, Date.now());
+ * // 500ms 后仍可查询 500ms 前的状态
+ * const pastState = dc.getCompensatedState(500); // 回溯 500ms
+ */
+class DelayCompensation {
+  /**
+   * @param {object} config
+   * @param {boolean} [config.delayCompensationEnabled=true]
+   * @param {number}  [config.stateHistorySize=120]      历史缓冲大小
+   * @param {number}  [config.maxLookbackTime=500]       最大回溯时间(ms)
+   */
+  constructor(config = {}) {
+    /** @type {boolean} 是否启用 */
+    this.enabled = config.delayCompensationEnabled !== false;
+    /** @type {number} 最大缓冲大小 */
+    this.maxBufferSize = config.stateHistorySize || SYNC_CONFIG.stateHistorySize;
+    /** @type {number} 最大回溯时间(ms) */
+    this.maxLookbackTime = config.maxLookbackTime || SYNC_CONFIG.maxLookbackTime;
+
+    /** @type {Array<{timestamp: number, state: object}>} 历史状态缓冲 */
+    this.stateHistory = [];
+  }
+
+  /**
+   * 记录当前状态
+   * @param {object} state - 游戏状态
+   * @param {number} [timestamp] - 时间戳(ms)
+   */
+  addState(state, timestamp = Date.now()) {
+    if (!this.enabled || !state) return;
+
+    this.stateHistory.push({
+      timestamp,
+      state: _fastClone(state),
+    });
+
+    // 裁剪超过最大大小
+    while (this.stateHistory.length > this.maxBufferSize) {
+      this.stateHistory.shift();
+    }
+  }
+
+  /**
+   * 获取指定时间点的状态（通过插值回溯）
+   * @param {number} targetTime - 目标时间戳(ms)
+   * @returns {object|null} 回溯到的状态
+   */
+  getStateAtTime(targetTime) {
+    if (!this.enabled || this.stateHistory.length === 0) return null;
+
+    // 检查是否超出最大回溯范围
+    const oldestTime = this.stateHistory[0].timestamp;
+    if (targetTime < oldestTime) {
+      // 超出回溯范围，返回最早的状态
+      return this.stateHistory[0].state;
+    }
+
+    // 查找包围目标时间的两个状态
+    let before = null;
+    let afterIdx = -1;
+    for (let i = 0; i < this.stateHistory.length; i++) {
+      if (this.stateHistory[i].timestamp <= targetTime) {
+        before = this.stateHistory[i];
+      } else if (afterIdx === -1) {
+        afterIdx = i;
+      }
+    }
+
+    // 没有找到前后状态
+    if (before === null && afterIdx === -1) return null;
+    if (before === null) return this.stateHistory[afterIdx].state;
+    if (afterIdx === -1) return before.state;
+
+    const after = this.stateHistory[afterIdx];
+    if (before === after) return before.state;
+
+    const dt = after.timestamp - before.timestamp;
+    if (dt <= 0) return after.state;
+
+    const alpha = Math.max(0, Math.min(1, (targetTime - before.timestamp) / dt));
+    return this._interpolateState(before.state, after.state, alpha);
+  }
+
+  /**
+   * 获取延迟补偿状态 —— 回溯 playerLatency 毫秒
+   * @param {number} playerLatency - 玩家延迟(ms)
+   * @returns {object|null}
+   */
+  getCompensatedState(playerLatency) {
+    const lookback = Math.min(playerLatency, this.maxLookbackTime);
+    const targetTime = Date.now() - lookback;
+    return this.getStateAtTime(targetTime);
+  }
+
+  /**
+   * 线性插值两个状态
+   * @private
+   */
+  _interpolateState(stateA, stateB, alpha) {
+    if (!stateA) return stateB;
+    if (!stateB) return stateA;
+
+    const result = _fastClone(stateA);
+
+    // 插值单位
+    const unitsBMap = new Map();
+    for (const u of (stateB.units || [])) {
+      unitsBMap.set(u.id, u);
+    }
+
+    if (result.units) {
+      for (let i = 0; i < result.units.length; i++) {
+        const uA = result.units[i];
+        const uB = unitsBMap.get(uA.id);
+        if (!uB) continue;
+
+        if (uA.position && uB.position) {
+          result.units[i] = {
+            ...uA,
+            position: {
+              x: uA.position.x + (uB.position.x - uA.position.x) * alpha,
+              z: uA.position.z + (uB.position.z - uA.position.z) * alpha,
+            },
+          };
+        }
+        if (uA.hp !== undefined && uB.hp !== undefined) {
+          result.units[i] = result.units[i] || { ...uA };
+          result.units[i].hp = uA.hp + (uB.hp - uA.hp) * alpha;
+        }
+        if (uA.shield !== undefined && uB.shield !== undefined) {
+          result.units[i] = result.units[i] || { ...uA };
+          result.units[i].shield = uA.shield + (uB.shield - uA.shield) * alpha;
+        }
+      }
+    }
+
+    // 插值资源（简单数值插值）
+    if (stateA.resources && stateB.resources) {
+      const resA = stateA.resources;
+      const resB = stateB.resources;
+      const resKeys = new Set([...Object.keys(resA), ...Object.keys(resB)]);
+      const res = {};
+      for (const k of resKeys) {
+        if (typeof resA[k] === 'number' && typeof resB[k] === 'number') {
+          res[k] = resA[k] + (resB[k] - resA[k]) * alpha;
+        } else {
+          res[k] = resB[k] !== undefined ? resB[k] : resA[k];
+        }
+      }
+      result.resources = res;
+    }
+
+    return result;
+  }
+
+  /**
+   * 清空历史
+   */
+  clear() {
+    this.stateHistory.length = 0;
+  }
+
+  /**
+   * 获取调试信息
+   * @returns {object}
+   */
+  getDebugInfo() {
+    const now = Date.now();
+    return {
+      enabled: this.enabled,
+      historySize: this.stateHistory.length,
+      maxBufferSize: this.maxBufferSize,
+      maxLookbackTime: this.maxLookbackTime,
+      oldestEntry: this.stateHistory.length > 0
+        ? now - this.stateHistory[0].timestamp + 'ms ago'
+        : 'N/A',
+    };
+  }
+}
+
 
 /**
  * 状态同步管理器 - 处理客户端预测、服务器确认和状态同步
@@ -365,7 +959,35 @@ export class SyncManager {
 
     // ── 事件回调 ──
     /** @type {Map<string, Set<Function>>} 事件回调 */
+    /** @type {Map<string, Set<Function>>} 事件回调 */
     this.listeners = new Map();
+    // ── 插值/外推组件 ──
+    /** @type {InterpolationBuffer} 远端单位插值缓冲区 */
+    this.interpolationBuffer = new InterpolationBuffer({
+      interpolationEnabled: options.interpolationEnabled !== false,
+      interpolationDelay: options.interpolationDelay || SYNC_CONFIG.interpolationDelay,
+      maxBufferSize: options.interpolationBufferSize || SYNC_CONFIG.interpolationBufferSize,
+    });
+
+    /** @type {ExtrapolationEngine} 远端单位外推引擎 */
+    this.extrapolationEngine = new ExtrapolationEngine({
+      extrapolationEnabled: options.extrapolationEnabled !== false,
+      maxExtrapolationTime: options.maxExtrapolationTime || SYNC_CONFIG.maxExtrapolationTime,
+      velocitySmoothing: options.velocitySmoothing || SYNC_CONFIG.velocitySmoothing,
+    });
+
+    /** @type {DelayCompensation} 延迟补偿器 */
+    this.delayCompensation = new DelayCompensation({
+      delayCompensationEnabled: options.delayCompensationEnabled !== false,
+      stateHistorySize: options.stateHistorySize || SYNC_CONFIG.stateHistorySize,
+      maxLookbackTime: options.maxLookbackTime || SYNC_CONFIG.maxLookbackTime,
+    });
+
+    // ── 延迟适应计时器 ──
+    /** @private @type {number} 延迟自适应检查间隔累计 */
+    this._latencyAdaptTimer = 0;
+    /** @private @type {number} 上次自适应的延迟值(ms) */
+    this._lastAdaptedLatency = -1;
 
     // 注册 WebSocket 消息处理
     this._setupListeners();
@@ -447,9 +1069,7 @@ export class SyncManager {
    */
   applySnapshot(snapshotData) {
     if (!snapshotData) return;
-
     let snapshot;
-
     // 判断是完整快照还是差分数据
     if (snapshotData.state !== undefined && snapshotData.diff === undefined) {
       // 完整快照
@@ -468,10 +1088,16 @@ export class SyncManager {
         return;
       }
     }
-
     // 更新帧号
     if (snapshot && snapshot.frame > this.lastConfirmedFrame) {
       this.lastConfirmedFrame = snapshot.frame;
+    }
+    // ── 缓冲快照用于插值、外推和延迟补偿 ──
+    if (snapshot) {
+      const snapshotTimestamp = snapshot.timestamp || Date.now();
+      this.interpolationBuffer.addSnapshot(snapshot, snapshotTimestamp);
+      this.extrapolationEngine.updateSnapshot(snapshot, snapshotTimestamp);
+      this.delayCompensation.addState(snapshot.state, snapshotTimestamp);
     }
 
     // 调和本地状态
@@ -587,6 +1213,9 @@ export class SyncManager {
       this.pingTimer = 0;
       this._sendPing();
     }
+
+    // ── 更新插值/外推状态 ──
+    this._updateInterpolation(delta);
   }
 
   // ═══════════════════════════════════════════
@@ -959,6 +1588,189 @@ export class SyncManager {
   }
 
   // ═══════════════════════════════════════════
+  // 插值/外推/延迟补偿
+  // ═══════════════════════════════════════════
+
+  /**
+   * 获取当前插值/外推后的游戏状态（用于渲染）
+   *
+   * 渲染循环应调用此方法而非直接读 gameState：
+   * - 远端单位位置会经过插值平滑，消除位置跳变
+   * - 如果插值缓冲不足，自动回退到外推预测
+   * - 本地玩家单位不受影响，仍使用客户端预测
+   *
+   * @param {number} [renderTime] - 渲染时间戳(ms)，默认 Date.now()
+   * @returns {object|null} 平滑后的游戏状态
+   */
+  getInterpolatedState(renderTime) {
+    const now = renderTime || Date.now();
+
+    // 优先使用插值（最平滑）
+    const interpolated = this.interpolationBuffer.getInterpolatedState(now);
+    if (interpolated) return interpolated;
+
+    // 插值不可用时回退到外推（有延迟补偿效果）
+    return this.extrapolationEngine.getExtrapolatedState(now);
+  }
+
+  /**
+   * 获取延迟补偿后的游戏状态（用于命中判定）
+   *
+   * 当玩家 A 发起攻击时，因为网络延迟，服务器收到命令时目标可能已移动。
+   * 此方法回溯到攻击命令发出时的历史状态，用那时的位置做判定。
+   *
+   * @param {number} [playerLatency] - 玩家延迟(ms)，默认使用本地估计值
+   * @returns {object|null} 回溯到的历史状态
+   */
+  getCompensatedState(playerLatency) {
+    const latency = playerLatency !== undefined ? playerLatency : this.serverLatency;
+    return this.delayCompensation.getCompensatedState(latency);
+  }
+
+  /**
+   * 获取指定时间点的历史状态
+   * @param {number} timestamp - 目标时间戳(ms)
+   * @returns {object|null} 该时间点的游戏状态
+   */
+  getStateAtTime(timestamp) {
+    return this.delayCompensation.getStateAtTime(timestamp);
+  }
+
+  /**
+   * 动态配置网络同步参数
+   *
+   * 可在运行时调用以适应网络条件变化，例如：
+   * - 检测到延迟升高时增大插值延迟
+   * - 检测到丢包时增大外推时间上限
+   *
+   * @param {object} config - 配置参数（只传需要修改的字段）
+   * @param {boolean} [config.interpolationEnabled] - 启用/禁用插值
+   * @param {number}  [config.interpolationDelay] - 插值延迟(ms)
+   * @param {number}  [config.interpolationBufferSize] - 插值缓冲区大小
+   * @param {boolean} [config.extrapolationEnabled] - 启用/禁用外推
+   * @param {number}  [config.maxExtrapolationTime] - 最大外推时间(ms)
+   * @param {number}  [config.velocitySmoothing] - 速度平滑系数(0-1)
+   * @param {boolean} [config.delayCompensationEnabled] - 启用/禁用延迟补偿
+   * @param {number}  [config.stateHistorySize] - 状态历史缓冲大小
+   * @param {number}  [config.maxLookbackTime] - 最大回溯时间(ms)
+   */
+  configureNetworkConditions(config) {
+    if (!config) return;
+
+    // 插值配置
+    if (config.interpolationEnabled !== undefined) {
+      this.interpolationBuffer.interpolationEnabled = config.interpolationEnabled;
+    }
+    if (config.interpolationDelay !== undefined) {
+      this.interpolationBuffer.interpolationDelay = config.interpolationDelay;
+    }
+    if (config.interpolationBufferSize !== undefined) {
+      this.interpolationBuffer.maxBufferSize = config.interpolationBufferSize;
+    }
+
+    // 外推配置
+    if (config.extrapolationEnabled !== undefined) {
+      this.extrapolationEngine.enabled = config.extrapolationEnabled;
+    }
+    if (config.maxExtrapolationTime !== undefined) {
+      this.extrapolationEngine.maxExtrapolationTime = config.maxExtrapolationTime;
+    }
+    if (config.velocitySmoothing !== undefined) {
+      this.extrapolationEngine.velocitySmoothing = config.velocitySmoothing;
+    }
+
+    // 延迟补偿配置
+    if (config.delayCompensationEnabled !== undefined) {
+      this.delayCompensation.enabled = config.delayCompensationEnabled;
+    }
+    if (config.stateHistorySize !== undefined) {
+      this.delayCompensation.maxBufferSize = config.stateHistorySize;
+    }
+    if (config.maxLookbackTime !== undefined) {
+      this.delayCompensation.maxLookbackTime = config.maxLookbackTime;
+    }
+
+    eventBus.emit('sync:config_changed', config);
+  }
+
+  /**
+   * 根据当前网络延迟自动调整插值/外推参数
+   *
+   * 预设策略:
+   * - <50ms:  低延迟 → 小插值延迟，禁用外推
+   * - 50-150: 中延迟 → 适度插值，轻度外推
+   * - 150-300: 高延迟 → 大插值延迟，中度外推
+   * - >300:   极高延迟 → 最大插值延迟，最大外推
+   *
+   * 由 _updateInterpolation 自动调用（每秒一次），也可手动触发
+   *
+   * @param {number} latency - 当前延迟(ms)
+   */
+  adaptToLatency(latency) {
+    if (latency < 50) {
+      // 低延迟: 减少插值延迟，禁用外推
+      this.configureNetworkConditions({
+        interpolationDelay: 50,
+        extrapolationEnabled: false,
+      });
+    } else if (latency < 150) {
+      // 中等延迟: 适度插值
+      this.configureNetworkConditions({
+        interpolationDelay: 100,
+        extrapolationEnabled: true,
+        maxExtrapolationTime: 200,
+      });
+    } else if (latency < 300) {
+      // 高延迟: 增加插值延迟
+      this.configureNetworkConditions({
+        interpolationDelay: 200,
+        extrapolationEnabled: true,
+        maxExtrapolationTime: 400,
+      });
+    } else {
+      // 非常高延迟: 最大插值
+      this.configureNetworkConditions({
+        interpolationDelay: 300,
+        extrapolationEnabled: true,
+        maxExtrapolationTime: 500,
+      });
+    }
+  }
+
+  /**
+   * 获取所有网络同步组件的调试信息
+   * @returns {object}
+   */
+  getNetworkSyncInfo() {
+    return {
+      interpolation: this.interpolationBuffer.getDebugInfo(),
+      extrapolation: this.extrapolationEngine.getDebugInfo(),
+      delayCompensation: this.delayCompensation.getDebugInfo(),
+    };
+  }
+
+  /**
+   * 更新插值/外推状态（每帧由 update 调用）
+   * @private
+   * @param {number} delta - 帧间隔（秒）
+   */
+  _updateInterpolation(delta) {
+    // 根据延迟自适应调整参数（每秒检查一次）
+    if (this.serverLatency > 0) {
+      this._latencyAdaptTimer += delta;
+      if (this._latencyAdaptTimer >= 1.0) {
+        this._latencyAdaptTimer = 0;
+        // 只在延迟变化超过 20% 时才重新适应，避免频繁切换
+        const latencyDiff = Math.abs(this.serverLatency - this._lastAdaptedLatency);
+        if (this._lastAdaptedLatency < 0 || latencyDiff > this._lastAdaptedLatency * 0.2) {
+          this.adaptToLatency(this.serverLatency);
+          this._lastAdaptedLatency = this.serverLatency;
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════
   // 事件系统
   // ═══════════════════════════════════════════
 
@@ -1013,6 +1825,10 @@ export class SyncManager {
         (this.compressor.compressedCount + this.compressor.fullCount),
       reconnecting: this._reconnecting,
       reconnectAttempts: this._reconnectAttempts,
+      // ── 插值/外推/延迟补偿信息 ──
+      interpolation: this.interpolationBuffer.getDebugInfo(),
+      extrapolation: this.extrapolationEngine.getDebugInfo(),
+      delayCompensation: this.delayCompensation.getDebugInfo(),
     };
   }
 
@@ -1028,8 +1844,12 @@ export class SyncManager {
     this.listeners.clear();
     this._lastChecksumState = null;
     this._cachedChecksum = 0;
+    // ── 清理插值/外推/延迟补偿组件 ──
+    this.interpolationBuffer.clear();
+    this.extrapolationEngine.clear();
+    this.delayCompensation.clear();
   }
 }
 
-export { SYNC_MSG, SYNC_CONFIG, SnapshotCompressor };
+export { SYNC_MSG, SYNC_CONFIG, SnapshotCompressor, InterpolationBuffer, ExtrapolationEngine, DelayCompensation };
 export default SyncManager;

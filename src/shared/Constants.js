@@ -158,3 +158,26 @@ export const EVENTS = {
   // 渲染器事件
   RENDERER_ERROR: 'renderer:error',
 };
+
+// ─── 空军高度系统 ──────────────────────────
+/** 飞行高度等级（Y轴偏移量，用于渲染和攻击判定） */
+export const FLIGHT_HEIGHT = {
+  GROUND: 0,          // 地面单位（isFlying=false）
+  LOW_ALTITUDE: 2.0,  // 低空飞行（小型/中型飞行单位）
+  HIGH_ALTITUDE: 4.0, // 高空飞行（大型飞行单位）
+};
+
+/** 单位体型到飞行高度的映射规则 */
+export const AIR_HEIGHT_MAP = {
+  [UNIT_SIZE.SMALL]: FLIGHT_HEIGHT.LOW_ALTITUDE,   // 小型→低空
+  [UNIT_SIZE.MEDIUM]: FLIGHT_HEIGHT.LOW_ALTITUDE,  // 中型→低空
+  [UNIT_SIZE.LARGE]: FLIGHT_HEIGHT.HIGH_ALTITUDE,  // 大型→高空
+};
+
+// ─── 飞行视觉特效颜色 ─────────────────────
+export const AIR_EFFECT_COLORS = {
+  MISSILE_AIR: 0xffaa00,    // 对空导弹（橙色尾焰）
+  MISSILE_GROUND: 0xff4444, // 对地导弹（红色）
+  LASER: 0x44ff44,          // 激光（绿色）
+  CONCUSSIVE_AIR: 0x66aaff, // 冲击波对空（蓝色）
+};

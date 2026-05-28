@@ -1,0 +1,16 @@
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "targets": "defaults",
+        "useBuiltIns": false,
+        "modules": false,
+        "bugfixes": true,
+        "exclude": [
+          "transform-typeof-symbol"
+        ]
+      }
+    ]
+  ]
+}

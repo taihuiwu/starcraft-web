@@ -86,6 +86,30 @@ export class PerformanceMonitor {
     /** 上次报告时间 */
     this._reportTime = 0;
 
+    // ─── 自动降级机制 ───
+    /**
+     * 连续低帧率检测状态
+     * 追踪 FPS 持续低于阈值的时长，超过阈值持续时间后自动降低画质
+     */
+    this._autoDowngrade = {
+      /** 是否启用自动降级 */
+      enabled: false,
+      /** 降级回调 (newQualityLevel) => void */
+      callback: null,
+      /** 连续低 FPS 的起始时间（毫秒），0 表示未处于低 FPS 状态 */
+      lowFpsStartTime: 0,
+      /** 触发降级所需的持续低 FPS 时间（毫秒），默认 5000ms (5秒) */
+      downgradeThresholdMs: 5000,
+      /** 降级冷却期（毫秒），避免频繁降级/升级循环 */
+      cooldownMs: 10000,
+      /** 上次降级的时间戳 */
+      lastDowngradeTime: 0,
+      /** 当前画质等级（外部同步设置） */
+      currentQualityLevel: -1,
+      /** 降级回调列表 (qualityLevel) => void */
+      onDowngrade: [],
+    };
+
     // ─── 初始化 ───
     this._initGPUTimer();
   }
@@ -273,6 +297,153 @@ export class PerformanceMonitor {
     if (stats.memoryMB > this.thresholds.memoryMB) {
       this._emitWarning('memoryMB', stats.memoryMB, this.thresholds.memoryMB);
     }
+
+    // ─── 自动降级检测 ───
+    this._checkAutoDowngrade(stats);
+  }
+
+  /**
+   * 检查是否需要自动降低画质等级
+   * 当 FPS 连续低于阈值超过指定时间（默认5秒）时触发降级
+   * @param {{ fps: number }} stats - 性能统计数据
+   * @private
+   */
+  _checkAutoDowngrade(stats) {
+    const ad = this._autoDowngrade;
+    if (!ad.enabled || !ad.callback) return;
+
+    const now = performance.now();
+
+    // 检查冷却期
+    if (ad.lastDowngradeTime > 0 && (now - ad.lastDowngradeTime) < ad.cooldownMs) {
+      return; // 冷却期内不降级
+    }
+
+    const isLowFps = stats.fps > 0 && stats.fps < this.thresholds.fps;
+
+    if (isLowFps) {
+      // FPS 低于阈值
+      if (ad.lowFpsStartTime === 0) {
+        // 刚进入低 FPS 状态，记录起始时间
+        ad.lowFpsStartTime = now;
+      }
+
+      const lowFpsDuration = now - ad.lowFpsStartTime;
+
+      // 超过持续时间阈值 → 触发降级
+      if (lowFpsDuration >= ad.downgradeThresholdMs) {
+        this._triggerAutoDowngrade();
+      }
+    } else {
+      // FPS 恢复正常，重置计时器
+      ad.lowFpsStartTime = 0;
+    }
+  }
+
+  /**
+   * 执行自动降级操作
+   * @private
+   */
+  _triggerAutoDowngrade() {
+    const ad = this._autoDowngrade;
+    const newLevel = ad.currentQualityLevel + 1;
+
+    // 已经是最低等级（POTATO = 4），无法继续降级
+    if (newLevel > 4) {
+      console.warn('[PerformanceMonitor] 已处于最低画质等级，无法继续自动降级');
+      return;
+    }
+
+    ad.currentQualityLevel = newLevel;
+    ad.lastDowngradeTime = performance.now();
+    ad.lowFpsStartTime = 0;
+
+    console.warn(
+      `[PerformanceMonitor] 自动降级: FPS 持续低于 ${this.thresholds.fps}` +
+      ` 超过 ${ad.downgradeThresholdMs / 1000}s, 画质等级 → ${newLevel}`
+    );
+
+    // 调用降级回调
+    if (typeof ad.callback === 'function') {
+      try {
+        ad.callback(newLevel);
+      } catch (err) {
+        console.error('[PerformanceMonitor] 自动降级回调执行失败:', err);
+      }
+    }
+
+    // 触发降级事件监听器
+    for (const listener of ad.onDowngrade) {
+      try {
+        listener(newLevel);
+      } catch (err) {
+        console.error('[PerformanceMonitor] 降级监听器执行失败:', err);
+      }
+    }
+  }
+
+  // ─── 自动降级 API ───
+
+  /**
+   * 启用自动降级机制
+   * 当 FPS 连续低于阈值超过指定时间时，自动降低画质等级
+   * @param {Function} callback - 降级回调 (newQualityLevel: number) => void
+   * @param {object} [options] - 配置选项
+   * @param {number} [options.downgradeThresholdMs=5000] - 触发降级的持续低FPS时间（毫秒）
+   * @param {number} [options.cooldownMs=10000] - 降级冷却期（毫秒）
+   * @param {number} [options.fpsThreshold=30] - FPS 低阈值
+   */
+  enableAutoDowngrade(callback, options = {}) {
+    const ad = this._autoDowngrade;
+    ad.enabled = true;
+    ad.callback = callback;
+    if (options.downgradeThresholdMs !== undefined) {
+      ad.downgradeThresholdMs = options.downgradeThresholdMs;
+    }
+    if (options.cooldownMs !== undefined) {
+      ad.cooldownMs = options.cooldownMs;
+    }
+    if (options.fpsThreshold !== undefined) {
+      this.thresholds.fps = options.fpsThreshold;
+    }
+    console.log('[PerformanceMonitor] 自动降级已启用', options);
+  }
+
+  /**
+   * 禁用自动降级机制
+   */
+  disableAutoDowngrade() {
+    this._autoDowngrade.enabled = false;
+    this._autoDowngrade.callback = null;
+    this._autoDowngrade.lowFpsStartTime = 0;
+    console.log('[PerformanceMonitor] 自动降级已禁用');
+  }
+
+  /**
+   * 同步当前画质等级（由 ResponsiveCanvas 等外部系统调用）
+   * @param {number} level - 当前画质等级
+   */
+  setQualityLevel(level) {
+    this._autoDowngrade.currentQualityLevel = level;
+  }
+
+  /**
+   * 注册降级事件监听器
+   * @param {Function} listener - (newQualityLevel: number) => void
+   */
+  onDowngrade(listener) {
+    if (typeof listener === 'function') {
+      this._autoDowngrade.onDowngrade.push(listener);
+    }
+  }
+
+  /**
+   * 移除降级事件监听器
+   * @param {Function} listener
+   */
+  offDowngrade(listener) {
+    const idx = this._autoDowngrade.onDowngrade.indexOf(listener);
+    if (idx !== -1) this._autoDowngrade.onDowngrade.splice(idx, 1);
   }
 
   /**
@@ -382,12 +553,18 @@ export class PerformanceMonitor {
     this._gpuTime = 0;
     this._totalFrames = 0;
     this._lastTime = 0;
+
+    // 重置自动降级状态（但不重置配置）
+    this._autoDowngrade.lowFpsStartTime = 0;
+    this._autoDowngrade.lastDowngradeTime = 0;
   }
 
   /**
    * 销毁性能监控器
    */
   dispose() {
+    this.disableAutoDowngrade();
+    this._autoDowngrade.onDowngrade.length = 0;
     this._warningCallbacks.length = 0;
     this.reset();
 

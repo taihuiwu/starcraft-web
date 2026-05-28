@@ -29,6 +29,75 @@ async function getRGBELoader() {
 }
 
 // ═══════════════════════════════════════════════
+// 模型路径配置
+// ═══════════════════════════════════════════════
+
+/**
+ * 单位类型 → glTF模型文件路径映射
+ * 当模型文件不存在时，自动fallback到占位几何体
+ */
+const UNIT_MODEL_PATHS = {
+  // 人族步兵
+  marine:            'assets/models/units/marine.glb',
+  marine_medic:      'assets/models/units/medic.glb',
+  firebat:           'assets/models/units/firebat.glb',
+  ghost:             'assets/models/units/ghost.glb',
+  // 人族载具
+  tank:              'assets/models/units/tank.glb',
+  goliath:           'assets/models/units/goliath.glb',
+  vulture:           'assets/models/units/vulture.glb',
+  // 人族飞行器
+  wraith:            'assets/models/units/wraith.glb',
+  valkyrie:          'assets/models/units/valkyrie.glb',
+  battlecruiser:     'assets/models/units/battlecruiser.glb',
+  dropship:          'assets/models/units/dropship.glb',
+  science_vessel:    'assets/models/units/science_vessel.glb',
+  // 人族工人
+  scv:               'assets/models/units/scv.glb',
+  // 人族建筑
+  command_center:    'assets/models/buildings/command_center.glb',
+  barracks:          'assets/models/buildings/barracks.glb',
+  factory:           'assets/models/buildings/factory.glb',
+  starport:          'assets/models/buildings/starport.glb',
+  supply_depot:      'assets/models/buildings/supply_depot.glb',
+  engineering_bay:   'assets/models/buildings/engineering_bay.glb',
+  academy:           'assets/models/buildings/academy.glb',
+  missile_turret:    'assets/models/buildings/missile_turret.glb',
+  bunker:            'assets/models/buildings/bunker.glb',
+  refinery:          'assets/models/buildings/refinery.glb',
+  // 异虫单位
+  drone:             'assets/models/zerg/drone.glb',
+  zergling:          'assets/models/zerg/zergling.glb',
+  hydralisk:         'assets/models/zerg/hydralisk.glb',
+  lurker:            'assets/models/zerg/lurker.glb',
+  mutalisk:          'assets/models/zerg/mutalisk.glb',
+  ultralisk:         'assets/models/zerg/ultralisk.glb',
+  overlord:          'assets/models/zerg/overlord.glb',
+  defiler:           'assets/models/zerg/defiler.glb',
+  // 星灵单位
+  zealot:            'assets/models/protoss/zealot.glb',
+  dragoon:           'assets/models/protoss/dragoon.glb',
+  high_templar:      'assets/models/protoss/high_templar.glb',
+  dark_templar:      'assets/models/protoss/dark_templar.glb',
+  archon:            'assets/models/protoss/archon.glb',
+  corsair:           'assets/models/protoss/corsair.glb',
+  scout:             'assets/models/protoss/scout.glb',
+  carrier:           'assets/models/protoss/carrier.glb',
+  arbiter:           'assets/models/protoss/arbiter.glb',
+  shuttle:           'assets/models/protoss/shuttle.glb',
+};
+
+/**
+ * 模型加载状态枚举
+ */
+const LOAD_STATUS = {
+  IDLE: 'idle',
+  LOADING: 'loading',
+  LOADED: 'loaded',
+  FAILED: 'failed',
+};
+
+// ═══════════════════════════════════════════════
 // 模型管理器主类
 // ═══════════════════════════════════════════════
 
@@ -49,6 +118,21 @@ export class ModelManager {
 
     /** @type {Set<THREE.Mesh>} 当前高亮选中的Mesh */
     this._highlightedMeshes = new Set();
+
+    /** @type {Map<string, Promise<THREE.Group>>} 进行中的加载请求（防重复加载） */
+    this._loadingPromises = new Map();
+
+    /** @type {Map<string, string>} 单位类型 → 已确认的模型路径（成功加载过的） */
+    this._resolvedPaths = new Map();
+
+    /** @type {Map<string, string>} 单位类型 → 加载状态 */
+    this._loadStatus = new Map();
+
+    /** @type {number} 已加载模型数量 */
+    this._loadedCount = 0;
+
+    /** @type {number} 加载失败数量（fallback到占位几何体） */
+    this._failedCount = 0;
 
     console.log('[ModelManager] 模型管理器初始化完成');
   }
@@ -107,6 +191,196 @@ export class ModelManager {
         }
       );
     });
+  }
+
+  // ═══════════════════════════════════════════════
+  // 带Fallback的模型加载（主要接口）
+  // ═══════════════════════════════════════════════
+
+  /**
+   * 获取单位类型对应的glTF模型路径
+   * @param {string} unitType - 单位类型标识
+   * @returns {string|null} 模型文件路径，未配置则返回null
+   */
+  getModelPath(unitType) {
+    return UNIT_MODEL_PATHS[unitType] || null;
+  }
+
+  /**
+   * 加载模型，若glTF文件不存在或加载失败则自动fallback到占位几何体
+   * 这是对外的主要接口，替代原来的 createPlaceholderModel
+   *
+   * @param {string} unitType - 单位类型标识
+   * @param {number} [teamId=1] - 队伍ID
+   * @returns {Promise<THREE.Group>} 模型Group（glTF或占位）
+   */
+  async loadModelWithFallback(unitType, teamId = 1) {
+    const modelPath = UNIT_MODEL_PATHS[unitType];
+
+    // 没有配置glTF路径 → 直接用占位几何体
+    if (!modelPath) {
+      return this.createPlaceholderModel(unitType, teamId);
+    }
+
+    // 已确认路径的缓存命中（之前成功加载过）
+    const cacheKey = `${modelPath}::${teamId}`;
+    if (this._modelCache.has(cacheKey)) {
+      const cached = this._modelCache.get(cacheKey);
+      return this._applyTeamColorAndReturn(cached.clone(), teamId);
+    }
+
+    // 正在加载中 → 复用同一个Promise（防重复请求）
+    if (this._loadingPromises.has(cacheKey)) {
+      const model = await this._loadingPromises.get(cacheKey);
+      return this._applyTeamColorAndReturn(model.clone(), teamId);
+    }
+
+    // 开始加载
+    const loadPromise = this._doLoadWithFallback(unitType, modelPath, teamId, cacheKey);
+    this._loadingPromises.set(cacheKey, loadPromise);
+
+    try {
+      const model = await loadPromise;
+      return model;
+    } finally {
+      this._loadingPromises.delete(cacheKey);
+    }
+  }
+
+  /**
+   * 内部方法：执行glTF加载，失败时fallback到占位几何体
+   * @private
+   */
+  async _doLoadWithFallback(unitType, modelPath, teamId, cacheKey) {
+    try {
+      this._loadStatus.set(unitType, LOAD_STATUS.LOADING);
+
+      const model = await this.loadModel(modelPath);
+
+      // 应用队伍颜色
+      const teamColor = TEAM_COLORS[teamId] || TEAM_COLORS[1];
+      this._tagTeamColorParts(model);
+      this.setTeamColor(model, teamColor);
+      model.userData.unitType = unitType;
+      model.userData.teamId = teamId;
+      model.userData.isGLTF = true;
+
+      // 缓存（包含teamId的key）
+      this._modelCache.set(cacheKey, model);
+      this._resolvedPaths.set(unitType, modelPath);
+      this._loadStatus.set(unitType, LOAD_STATUS.LOADED);
+      this._loadedCount++;
+
+      console.log(`[ModelManager] glTF加载成功: ${unitType} ← ${modelPath}`);
+      return this._applyTeamColorAndReturn(model.clone(), teamId);
+    } catch (error) {
+      // glTF加载失败 → Fallback到占位几何体
+      this._loadStatus.set(unitType, LOAD_STATUS.FAILED);
+      this._failedCount++;
+
+      console.warn(
+        `[ModelManager] glTF加载失败, 使用占位几何体: ${unitType} (${modelPath})`,
+        error.message
+      );
+
+      const placeholder = this.createPlaceholderModel(unitType, teamId);
+      placeholder.userData.loadFallback = true;
+      return placeholder;
+    }
+  }
+
+  /**
+   * 为glTF模型自动标记队伍颜色部件
+   * 遍历模型，将包含team/color相关关键词的材质标记为isTeamColor
+   * @param {THREE.Object3D} model - 模型对象
+   * @private
+   */
+  _tagTeamColorParts(model) {
+    const teamColorKeywords = ['team', 'color', 'stripe', 'accent', 'emblem', 'decal'];
+    model.traverse((obj) => {
+      if (obj.isMesh && obj.material) {
+        const name = (obj.material.name || '').toLowerCase();
+        const userDataKeys = Object.keys(obj.userData).map(k => k.toLowerCase());
+        const combined = name + ' ' + userDataKeys.join(' ');
+        if (teamColorKeywords.some(kw => combined.includes(kw))) {
+          obj.userData.isTeamColor = true;
+        }
+      }
+    });
+  }
+
+  /**
+   * 应用队伍颜色并返回模型
+   * @param {THREE.Group} model
+   * @param {number} teamId
+   * @returns {THREE.Group}
+   * @private
+   */
+  _applyTeamColorAndReturn(model, teamId) {
+    const teamColor = TEAM_COLORS[teamId] || TEAM_COLORS[1];
+    this.setTeamColor(model, teamColor);
+    model.userData.teamId = teamId;
+    return model;
+  }
+
+  /**
+   * 批量预加载多个单位类型的glTF模型
+   * 在游戏加载阶段调用，避免游戏进行中卡顿
+   *
+   * @param {string[]} unitTypes - 要预加载的单位类型数组
+   * @param {number} [teamId=1] - 队伍ID（影响预缓存的颜色）
+   * @returns {Promise<{loaded: string[], failed: string[]}>} 加载结果统计
+   */
+  async preloadModels(unitTypes, teamId = 1) {
+    console.log(`[ModelManager] 开始预加载 ${unitTypes.length} 个模型...`);
+
+    const results = await Promise.allSettled(
+      unitTypes.map(type => this.loadModelWithFallback(type, teamId))
+    );
+
+    const loaded = [];
+    const failed = [];
+
+    results.forEach((result, i) => {
+      if (result.status === 'fulfilled') {
+        loaded.push(unitTypes[i]);
+      } else {
+        failed.push(unitTypes[i]);
+      }
+    });
+
+    console.log(
+      `[ModelManager] 预加载完成: 成功=${loaded.length}, 失败=${failed.length}`
+    );
+
+    return { loaded, failed };
+  }
+
+  /**
+   * 获取模型加载统计信息
+   * @returns {{total: number, loaded: number, failed: number, cached: number, loading: number}}
+   */
+  getLoadStats() {
+    let loading = 0;
+    for (const status of this._loadStatus.values()) {
+      if (status === LOAD_STATUS.LOADING) loading++;
+    }
+    return {
+      total: this._loadStatus.size,
+      loaded: this._loadedCount,
+      failed: this._failedCount,
+      cached: this._modelCache.size,
+      loading,
+    };
+  }
+
+  /**
+   * 检查某个单位类型是否已成功加载过glTF模型
+   * @param {string} unitType
+   * @returns {boolean}
+   */
+  hasGLTFModel(unitType) {
+    return this._loadStatus.get(unitType) === LOAD_STATUS.LOADED;
   }
 
   // ═══════════════════════════════════════════════
@@ -582,6 +856,13 @@ export class ModelManager {
 
     // 清除高亮
     this.clearAllHighlights();
+
+    // 清除加载追踪
+    this._loadingPromises.clear();
+    this._resolvedPaths.clear();
+    this._loadStatus.clear();
+    this._loadedCount = 0;
+    this._failedCount = 0;
 
     console.log('[ModelManager] 已销毁');
   }

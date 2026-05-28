@@ -4,8 +4,10 @@
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
-import { EVENTS } from '../shared/Constants.js';
+import { EVENTS, FLIGHT_HEIGHT, AIR_HEIGHT_MAP, UNIT_SIZE } from '../shared/Constants.js';
 import eventBus from '../shared/EventBus.js';
+import { LODSystem, LOD_LEVEL } from './LODSystem.js';
+import { DrawCallBatcher } from './DrawCallBatcher.js';
 
 /**
  * 渲染器核心类
@@ -113,6 +115,17 @@ export class Renderer {
 
     this.renderer.domElement.addEventListener('webglcontextlost', this._onContextLost);
     this.renderer.domElement.addEventListener('webglcontextrestored', this._onContextRestored);
+
+    // ─────────────────────── LOD 系统 ───────────────────────
+    /** LOD 管理系统 — 根据距离自动切换单位模型精度 */
+    this.lodSystem = new LODSystem(this.camera);
+
+    // ─────────────────────── Draw Call 批量合并 ───────────────────────
+    /** Draw Call 批量合并器 — 相同材质的单位使用 InstancedMesh 渲染 */
+    this.drawCallBatcher = new DrawCallBatcher({ autoAddToScene: true });
+    this.drawCallBatcher.setScene(this.scene);
+
+    console.log('[Renderer] 初始化完成', width, 'x', height);
   }
 
   // ═══════════════════════════════════════════════
@@ -225,6 +238,136 @@ export class Renderer {
   }
 
   // ═══════════════════════════════════════════════
+  // LOD 系统集成
+  // ═══════════════════════════════════════════════
+
+  /**
+   * 注册单位到 LOD 系统
+   * 远距离单位将自动使用简化模型/骨骼
+   *
+   * @param {object} unit - 单位实例（需包含 position 属性）
+   * @param {THREE.Object3D[]} lodLevels - [highDetail, mediumDetail, lowDetail]
+   *   三个精度级别的 Three.js Object3D，不同精度级别可以为 null
+   * @param {object} [options] - 可选配置
+   * @param {boolean} [options.addToScene=true] - 是否自动添加 LOD 级别的对象到场景
+   * @returns {number} LOD 条目索引（可用于后续移除）
+   */
+  registerUnitLOD(unit, lodLevels, options = {}) {
+    const addToScene = options.addToScene !== false;
+
+    // 将 LOD 级别的对象添加到场景
+    if (addToScene) {
+      for (const level of lodLevels) {
+        if (level && !level.parent) {
+          this.scene.add(level);
+        }
+      }
+    }
+
+    const idx = this.lodSystem.addObject(unit, lodLevels);
+    console.log(`[Renderer] 注册单位 LOD: 索引 ${idx}, 总数 ${this.lodSystem.getCount()}`);
+    return idx;
+  }
+
+  /**
+   * 从 LOD 系统移除单位
+   * @param {object} unit - 之前注册的单位引用
+   * @param {boolean} [removeFromScene=true] - 是否从场景中移除所有 LOD 级别对象
+   */
+  unregisterUnitLOD(unit, removeFromScene = true) {
+    if (removeFromScene) {
+      // 查找并移除所有 LOD 级别对象
+      for (let i = this.lodSystem._objects.length - 1; i >= 0; i--) {
+        const entry = this.lodSystem._objects[i];
+        if (entry.object === unit) {
+          for (const level of entry.levels) {
+            if (level) {
+              this.scene.remove(level);
+            }
+          }
+          break;
+        }
+      }
+    }
+    this.lodSystem.removeObject(unit);
+  }
+
+  /**
+   * 更新 LOD 系统（每帧调用）
+   * 根据摄像机距离自动切换单位模型精度
+   * @param {number} delta - 帧间隔时间（秒）
+   */
+  updateLOD(delta) {
+    this.lodSystem.update(delta);
+  }
+
+  /**
+   * 根据画质等级配置 LOD 距离阈值
+   * 低画质时缩小 LOD 切换距离，使更多单位使用简化模型
+   * @param {number} qualityLevel - QUALITY_LEVEL 值 (0=ULTRA, 4=POTATO)
+   */
+  configureLODForQuality(qualityLevel) {
+    // 画质越低，LOD 切换距离越近（更早降级）
+    const lodPresets = {
+      0: { high: 40, medium: 100, low: 200 },  // ULTRA
+      1: { high: 35, medium: 90, low: 180 },   // HIGH
+      2: { high: 30, medium: 80, low: 150 },   // MEDIUM (默认)
+      3: { high: 20, medium: 50, low: 100 },   // LOW
+      4: { high: 15, medium: 35, low: 70 },    // POTATO
+    };
+    const preset = lodPresets[qualityLevel] || lodPresets[2];
+    this.lodSystem.setDistances(preset.high, preset.medium, preset.low);
+    console.log(`[Renderer] LOD 距离已按画质等级 ${qualityLevel} 配置:`, preset);
+  }
+
+  // ═══════════════════════════════════════════════
+  // Draw Call 批量合并
+  // ═══════════════════════════════════════════════
+
+  /**
+   * 将单位添加到 Draw Call 批量合并
+   * 相同 geometry+material 的单位会合并为一个 InstancedMesh，减少 draw calls
+   *
+   * @param {object} unit - 单位实例（需要有 id 属性）
+   * @param {THREE.BufferGeometry} geometry - 共享几何体
+   * @param {THREE.Material} material - 共享材质
+   * @param {THREE.Matrix4} [transform] - 初始变换矩阵（可选）
+   * @returns {number} 实例 ID
+   */
+  addBatchedUnit(unit, geometry, material, transform) {
+    return this.drawCallBatcher.addUnit(unit, geometry, material, transform);
+  }
+
+  /**
+   * 从 Draw Call 批量合并中移除单位
+   * @param {object} unit - 单位实例
+   */
+  removeBatchedUnit(unit) {
+    this.drawCallBatcher.removeUnit(unit);
+  }
+
+  /**
+   * 更新已批量合并的单位的变换
+   * @param {object} unit - 单位实例
+   * @param {THREE.Matrix4} [transform] - 新的变换矩阵
+   */
+  updateBatchedUnit(unit, transform) {
+    this.drawCallBatcher.updateUnit(unit, transform);
+  }
+
+  /**
+   * 获取 Draw Call 批量合并的统计信息
+   * @returns {{ batches: number, instances: number, drawCalls: number }}
+   */
+  getBatchStats() {
+    return {
+      batches: this.drawCallBatcher.stats.totalBatches,
+      instances: this.drawCallBatcher.getTotalInstanceCount(),
+      drawCalls: this.drawCallBatcher.getDrawCallCount(),
+    };
+  }
+
+  // ═══════════════════════════════════════════════
   // 场景物体管理
   // ═══════════════════════════════════════════════
 
@@ -331,6 +474,68 @@ export class Renderer {
   }
 
   // ═══════════════════════════════════════════════
+  // 飞行单位渲染辅助
+  // ═══════════════════════════════════════════════
+
+  /**
+   * 获取单位的飞行高度Y轴偏移
+   * 根据 unit.isFlying 和 unit.unitSize 决定高度
+   *
+   * @param {Object} unit - 单位实例（需包含 isFlying、unitSize 属性）
+   * @returns {number} Y轴偏移量（地面单位返回 0）
+   */
+  getFlightHeight(unit) {
+    if (!unit || !unit.isFlying) return FLIGHT_HEIGHT.GROUND;
+    const size = unit.unitSize || 'medium';
+    return AIR_HEIGHT_MAP[size] ?? FLIGHT_HEIGHT.LOW_ALTITUDE;
+  }
+
+  /**
+   * 将飞行单位的mesh位置同步到正确的Y轴高度
+   * 应在每帧或单位创建/切换形态时调用
+   *
+   * @param {THREE.Object3D} mesh - 单位的3D对象
+   * @param {Object} unit - 单位实例
+   */
+  applyFlyingOffset(mesh, unit) {
+    if (!mesh || !unit) return;
+    const yOff = this.getFlightHeight(unit);
+    // 在现有Y坐标基础上加上飞行高度偏移
+    mesh.position.y = (unit.position ? (unit.position.y || 0) : 0) + yOff;
+  }
+
+  /**
+   * 批量更新所有飞行单位的mesh高度
+   * 在主渲染循环中调用一次即可
+   *
+   * @param {Array} units - 单位数组（所有存活单位）
+   */
+  updateFlyingUnits(units) {
+    if (!units) return;
+    for (const unit of units) {
+      if (!unit.alive || !unit.isFlying || !unit.mesh) continue;
+      this.applyFlyingOffset(unit.mesh, unit);
+    }
+  }
+
+  /**
+   * 获取单位的3D世界位置（含飞行高度）
+   * 用于弹道计算、特效渲染等
+   *
+   * @param {Object} unit - 单位实例
+   * @returns {Object} { x, y, z }
+   */
+  getUnitWorldPosition(unit) {
+    const pos = unit.position || { x: 0, y: 0, z: 0 };
+    const yOff = this.getFlightHeight(unit);
+    return {
+      x: pos.x,
+      y: (pos.y || 0) + yOff,
+      z: pos.z || 0,
+    };
+  }
+
+  // ═══════════════════════════════════════════════
   // 资源释放
   // ═══════════════════════════════════════════════
 
@@ -365,6 +570,16 @@ export class Renderer {
     // 移除 WebGL 上下文事件监听
     this.renderer.domElement.removeEventListener('webglcontextlost', this._onContextLost);
     this.renderer.domElement.removeEventListener('webglcontextrestored', this._onContextRestored);
+
+    // 销毁 LOD 系统
+    if (this.lodSystem) {
+      this.lodSystem.dispose();
+    }
+
+    // 销毁 Draw Call 批量合并器
+    if (this.drawCallBatcher) {
+      this.drawCallBatcher.dispose();
+    }
 
     this.renderer.dispose();
     this.scene.traverse((obj) => {

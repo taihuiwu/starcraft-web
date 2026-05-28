@@ -44,6 +44,12 @@ export default class SaveManager {
     /** @type {number} 存档计数器（用于区分同一槽位的多次保存） */
     this._saveCounter = 0;
 
+    /** @type {boolean} 是否启用压缩存储 */
+    this.enableCompression = true;
+
+    /** @type {Map<string, string>} 已损坏存档的备份映射 */
+    this._corruptionBackup = new Map();
+
     console.log('[SaveManager] 存档管理器初始化完成');
   }
 
@@ -68,15 +74,18 @@ export default class SaveManager {
         this.serializer.serializeDelta(gm) :
         this.serializer.serialize(gm);
 
+      // 压缩存档数据以节省localStorage空间
+      const finalData = this.enableCompression ?
+        this.serializer.compress(json) : json;
+
       // 检查大小限制
-      if (json.length > MAX_SAVE_SIZE) {
-        console.error(`[SaveManager] 存档数据超过大小限制: ${(json.length / 1024 / 1024).toFixed(1)}MB`);
+      if (finalData.length > MAX_SAVE_SIZE) {
+        console.error(`[SaveManager] 存档数据超过大小限制: ${(finalData.length / 1024 / 1024).toFixed(1)}MB`);
         return false;
       }
-
       // 保存到localStorage
       const key = SAVE_KEY_PREFIX + slotId;
-      localStorage.setItem(key, json);
+      localStorage.setItem(key, finalData);
 
       // 更新存档列表元数据
       this._updateSaveList(slotId, {
@@ -84,16 +93,17 @@ export default class SaveManager {
         race: gm.playerRace,
         gameTime: gm.gameTickTime,
         timestamp: Date.now(),
-        size: json.length,
+        size: finalData.length,
+        compressed: this.enableCompression,
         isAutoSave: options.isAutoSave || false,
         slotId,
       });
-
       this._saveCounter++;
-      console.log(`[SaveManager] ✅ 保存成功: ${slotId} (${(json.length / 1024).toFixed(1)}KB)`);
-
+      const compressionInfo = this.enableCompression && json.length > finalData.length ?
+        ` (压缩${(json.length / 1024).toFixed(1)}KB→${(finalData.length / 1024).toFixed(1)}KB)` : '';
+      console.log(`[SaveManager] ✅ 保存成功: ${slotId} (${(finalData.length / 1024).toFixed(1)}KB${compressionInfo})`);
       // 发射存档事件
-      eventBus.emit('save:game_saved', { slotId, size: json.length });
+      eventBus.emit('save:game_saved', { slotId, size: finalData.length });
       return true;
     } catch (err) {
       console.error('[SaveManager] 保存失败:', err);
@@ -126,8 +136,8 @@ export default class SaveManager {
         eventBus.emit('save:game_loaded', { slotId });
         return true;
       } else {
-        console.error(`[SaveManager] 加载失败: 存档数据损坏`);
-        return false;
+        console.warn(`[SaveManager] 加载失败: 存档数据损坏，尝试损坏恢复`);
+        return this._attemptCorruptionRecovery(slotId, json, gm);
       }
     } catch (err) {
       console.error('[SaveManager] 加载失败:', err);
@@ -179,6 +189,7 @@ export default class SaveManager {
         size: item.size,
         sizeFormatted: this._formatSize(item.size),
         isAutoSave: item.isAutoSave,
+        compressed: item.compressed || false,
       }));
   }
 
@@ -337,7 +348,9 @@ export default class SaveManager {
         return { valid: false, errors: ['存档不存在'] };
       }
 
-      const data = JSON.parse(json);
+      // 解压后解析（支持压缩格式）
+      const decompressed = this.serializer._tryDecompress(json);
+      const data = JSON.parse(decompressed);
 
       // 检查必要字段
       if (!data.version) errors.push('缺少版本号');
@@ -469,5 +482,184 @@ export default class SaveManager {
     if (bytes < 1024) return bytes + 'B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB';
     return (bytes / 1024 / 1024).toFixed(1) + 'MB';
+  }
+
+  // ═══════════════════════════════════════
+  // 损坏恢复与修复
+  // ═══════════════════════════════════════
+
+  /**
+   * 尝试损坏恢复：尝试各种策略修复并加载损坏的存档
+   * @param {string} slotId - 槽位ID
+   * @param {string} rawJson - 原始JSON字符串
+   * @param {GameManager} gm - 游戏管理器
+   * @returns {boolean} 是否恢复成功
+   */
+  _attemptCorruptionRecovery(slotId, rawJson, gm) {
+    console.log(`[SaveManager] 开始损坏恢复: ${slotId}`);
+
+    // 策略1: 尝试去除可能的尾部截断字符并修复JSON
+    try {
+      let cleaned = rawJson.trim();
+      // 尝试补全被截断的JSON
+      if (cleaned.endsWith(',') || cleaned.endsWith('{')) {
+        cleaned = cleaned.slice(0, cleaned.lastIndexOf(',') > cleaned.lastIndexOf('{') ?
+          cleaned.lastIndexOf(',') : cleaned.lastIndexOf('{'));
+      }
+      // 尝试补全括号
+      const openBraces = (cleaned.match(/{/g) || []).length;
+      const closeBraces = (cleaned.match(/}/g) || []).length;
+      const openBrackets = (cleaned.match(/\[/g) || []).length;
+      const closeBrackets = (cleaned.match(/]/g) || []).length;
+      cleaned += '}'.repeat(Math.max(0, openBraces - closeBraces));
+      cleaned += ']'.repeat(Math.max(0, openBrackets - closeBrackets));
+
+      if (this.serializer.deserialize(cleaned, gm)) {
+        console.log(`[SaveManager] ✅ 损坏恢复成功（JSON修复）: ${slotId}`);
+        this._saveCorruptionBackup(slotId, rawJson);
+        return true;
+      }
+    } catch (e) {
+      // 策略1失败
+    }
+
+    // 策略2: 尝试提取JSON对象（忽略前后垃圾字符）
+    try {
+      const firstBrace = rawJson.indexOf('{');
+      const lastBrace = rawJson.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        const extracted = rawJson.slice(firstBrace, lastBrace + 1);
+        if (this.serializer.deserialize(extracted, gm)) {
+          console.log(`[SaveManager] ✅ 损坏恢复成功（JSON提取）: ${slotId}`);
+          this._saveCorruptionBackup(slotId, rawJson);
+          return true;
+        }
+      }
+    } catch (e) {
+      // 策略2失败
+    }
+
+    // 所有策略失败
+    console.error(`[SaveManager] ❌ 损坏恢复失败，存档无法修复: ${slotId}`);
+    return false;
+  }
+
+  /**
+   * 保存损坏存档的备份（用于后续分析）
+   * @param {string} slotId
+   * @param {string} rawData
+   */
+  _saveCorruptionBackup(slotId, rawData) {
+    try {
+      const backupKey = SAVE_KEY_PREFIX + slotId + '_corruption_backup';
+      localStorage.setItem(backupKey, rawData.slice(0, 10000)); // 限制备份大小
+      this._corruptionBackup.set(slotId, backupKey);
+      console.log(`[SaveManager] 已保存损坏存档备份: ${slotId}`);
+    } catch (err) {
+      // 备份失败不影响主流程
+    }
+  }
+
+  /**
+   * 获取存档的健康状态报告
+   * @param {string} slotId
+   * @returns {Object} 健康报告
+   */
+  getSaveHealthReport(slotId) {
+    const report = {
+      slotId,
+      exists: false,
+      valid: false,
+      version: null,
+      size: 0,
+      compressed: false,
+      canLoad: false,
+      issues: [],
+    };
+
+    try {
+      const key = SAVE_KEY_PREFIX + slotId;
+      const json = localStorage.getItem(key);
+
+      if (!json) {
+        report.issues.push('存档不存在');
+        return report;
+      }
+
+      report.exists = true;
+      report.size = json.length;
+
+      // 检查是否压缩
+      report.compressed = json.startsWith('SCZ:');
+
+      // 尝试解析
+      let data;
+      try {
+        const parsed = JSON.parse(this.serializer._tryDecompress(json));
+        data = parsed;
+      } catch (e) {
+        report.issues.push('JSON解析失败: ' + e.message);
+        return report;
+      }
+
+      // 校验
+      const validation = this.serializer.validateSaveData(data);
+      report.version = data.version || null;
+      report.valid = validation.valid;
+      report.issues.push(...validation.errors);
+
+      // 检查是否可迁移
+      if (data.version && data.version !== GameSerializer.getSaveVersion()) {
+        report.issues.push(`版本不匹配: v${data.version} → v${GameSerializer.getSaveVersion()}`);
+        report.canLoad = GameSerializer.canMigrate(data.version);
+      } else {
+        report.canLoad = true;
+      }
+
+      return report;
+    } catch (err) {
+      report.issues.push('检查失败: ' + err.message);
+      return report;
+    }
+  }
+
+  /**
+   * 批量检查所有存档的健康状态
+   * @returns {Array<Object>} 各存档健康报告
+   */
+  checkAllSavesHealth() {
+    const list = this._getSaveListRaw();
+    return Object.keys(list).map((slotId) => this.getSaveHealthReport(slotId));
+  }
+
+  /**
+   * 修复指定存档（重新序列化并保存）
+   * @param {string} slotId
+   * @returns {boolean} 是否修复成功
+   */
+  repairSave(slotId) {
+    try {
+      const gm = this.gameManager;
+      const key = SAVE_KEY_PREFIX + slotId;
+      const json = localStorage.getItem(key);
+
+      if (!json) {
+        console.warn(`[SaveManager] 无法修复，存档不存在: ${slotId}`);
+        return false;
+      }
+
+      // 尝试加载
+      const loaded = this.serializer.deserialize(json, gm);
+      if (!loaded) {
+        console.error(`[SaveManager] 无法加载存档，无法修复: ${slotId}`);
+        return false;
+      }
+
+      // 重新保存（使用当前版本格式）
+      return this.saveGame(slotId, { name: '修复后的存档' });
+    } catch (err) {
+      console.error('[SaveManager] 修复失败:', err);
+      return false;
+    }
   }
 }

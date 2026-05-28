@@ -21,7 +21,10 @@
     "electron:build:linux": "vite build && electron-builder --linux",
     "electron:build:all": "vite build && electron-builder -wml",
     "server": "node server/index.js",
-    "server:dev": "node --watch server/index.js"
+    "server:dev": "node --watch server/index.js",
+    "build:legacy": "vite build --target browserslist",
+    "build:analyze": "vite build --mode analysis",
+    "typecheck": "node --check src/**/*.js"
   },
   "build": {
     "appId": "com.starcraft.web",
@@ -99,6 +102,9 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "@babel/plugin-transform-runtime": "^7.24.0",
     "concurrently": "^8.2.0",
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0",
