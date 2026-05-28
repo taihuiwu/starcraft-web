@@ -71,14 +71,24 @@ class EventBus {
     const listeners = this.listeners.get(event);
     if (listeners) {
       for (const cb of listeners) {
-        cb(data);
+        try {
+          cb(data);
+        } catch (err) {
+          if (this._onError) this._onError(err);
+          else throw err;
+        }
       }
     }
 
     const once = this.onceListeners.get(event);
     if (once) {
       for (const cb of once) {
-        cb(data);
+        try {
+          cb(data);
+        } catch (err) {
+          if (this._onError) this._onError(err);
+          else throw err;
+        }
       }
       once.clear();
     }

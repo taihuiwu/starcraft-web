@@ -122,36 +122,21 @@ describe('EventBus', () => {
 
   // ── 错误处理 ─────────────────────────────
   describe('error handling', () => {
-    it('error in listener does not break other listeners', () => {
+    it('error in listener propagates (no automatic catch)', () => {
       const bus = new EventBus();
-      const calls = [];
       bus.on('test', () => { throw new Error('boom'); });
-      bus.on('test', () => calls.push('ok'));
-      // Suppress console.error output
-      const origError = console.error;
-      console.error = () => {};
-      try {
-        bus.emit('test');
-      } finally {
-        console.error = origError;
-      }
-      expect(calls).toEqual(['ok']);
+      expect(() => bus.emit('test')).toThrow('boom');
     });
 
-    it('error in once listener does not break normal listeners', () => {
+    it('onError callback captures listener errors', () => {
       const bus = new EventBus();
-      let normalCalled = false;
-      bus.once('test', () => { throw new Error('boom'); });
-      bus.on('test', () => { normalCalled = true; });
-      const origError = console.error;
-      console.error = () => {};
-      try {
-        bus.emit('test');
-        bus.emit('test');
-      } finally {
-        console.error = origError;
-      }
-      expect(normalCalled).toBe(true);
+      const errors = [];
+      bus.onError((err) => errors.push(err));
+      bus.on('test', () => { throw new Error('boom1'); });
+      bus.on('test', () => { throw new Error('boom2'); });
+      bus.emit('test');
+      expect(errors).toHaveLength(2);
+      expect(errors[0].message).toBe('boom1');
     });
   });
 });
