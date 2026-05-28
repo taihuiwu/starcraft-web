@@ -276,7 +276,7 @@ export class Quadtree {
     let best = null;
     let bestDist = radius * radius; // 使用平方距离避免开方
 
-    this._queryNearestNode(this.root, point, best, bestDist);
+    best = this._queryNearestNode(this.root, point, best, bestDist);
 
     return best ? best : null;
   }
