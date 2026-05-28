@@ -95,6 +95,24 @@ export class Renderer {
     this.particleCamera = this.camera; // 共享同一个透视相机
 
     console.log('[Renderer] 初始化完成', width, 'x', height);
+
+    // ─────────────────────── WebGL 上下文丢失/恢复 ───────────────────────
+    this._onContextLost = (e) => {
+      e.preventDefault(); // 告诉浏览器我们想要恢复
+      this._contextLost = true;
+      console.warn('[Renderer] WebGL 上下文丢失');
+      eventBus.emit(EVENTS.RENDERER_ERROR, { type: 'webgl_context_lost' });
+    };
+
+    this._onContextRestored = () => {
+      this._contextLost = false;
+      this._restoreContext();
+      console.log('[Renderer] WebGL 上下文已恢复');
+      eventBus.emit(EVENTS.RENDERER_ERROR, { type: 'webgl_context_restored' });
+    };
+
+    this.renderer.domElement.addEventListener('webglcontextlost', this._onContextLost);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this._onContextRestored);
   }
 
   // ═══════════════════════════════════════════════
@@ -163,6 +181,8 @@ export class Renderer {
    * 响应窗口大小变化，更新相机宽高比和渲染器尺寸
    */
   resize() {
+    if (this._contextLost) return; // 上下文丢失时不更新
+
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
 
@@ -185,6 +205,8 @@ export class Renderer {
    * 先渲染主场景，再叠加渲染粒子子场景
    */
   render() {
+    if (this._contextLost) return; // 上下文丢失时不渲染
+
     // 1. 渲染主场景（地形、单位、建筑等）
     this.renderer.render(this.scene, this.camera);
 
@@ -314,10 +336,36 @@ export class Renderer {
   // ═══════════════════════════════════════════════
 
   /**
+   * WebGL 上下文恢复后的重新初始化
+   * 重新创建渲染器的内部状态（阴影、色调映射等）
+   */
+  _restoreContext() {
+    // 重新启用阴影映射
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    // 重新设置色调映射
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
+
+    // 重新设置输出色彩空间
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    // 重新设置像素比
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    console.log('[Renderer] WebGL 上下文恢复完成');
+  }
+
+  /**
    * 销毁渲染器，释放所有GPU资源
    */
   dispose() {
     window.removeEventListener('resize', this._onResize);
+
+    // 移除 WebGL 上下文事件监听
+    this.renderer.domElement.removeEventListener('webglcontextlost', this._onContextLost);
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this._onContextRestored);
 
     this.renderer.dispose();
     this.scene.traverse((obj) => {

@@ -388,8 +388,10 @@ export class BuildOrderManager {
     if (!condition || condition === 'always') return true;
 
     try {
-      // 安全的条件替换
-      let expr = condition;
+      // Safe condition evaluator — no eval/new Function used.
+      // Replaces variable names with their values, then parses the
+      // simple boolean expression (supports && and comparisons only).
+
       const replacements = {
         'minerals': state.minerals || 0,
         'gas': state.gas || 0,
@@ -430,11 +432,33 @@ export class BuildOrderManager {
         'singularity_charge_done': !!state.techDone?.singularity_charge,
       };
 
-      for (const [key, value] of Object.entries(replacements)) {
-        expr = expr.replace(new RegExp(`\\b${key}\\b`, 'g'), JSON.stringify(value));
+      // Tokenize: split on '&&' and evaluate each comparison
+      const andParts = condition.split('&&').map(s => s.trim());
+      for (const part of andParts) {
+        // Try to match: variable op value
+        // Supported operators: >=, <=, >, <, ==
+        const compMatch = part.match(/^(\w+)\s*(>=|<=|>|<|==)\s*(.+)$/);
+        if (compMatch) {
+          const [, varName, op, rawVal] = compMatch;
+          if (!(varName in replacements)) return false;
+          const left = Number(replacements[varName]);
+          const right = Number(rawVal.replace(/['"]/g, '').trim());
+          if (isNaN(left) || isNaN(right)) return false;
+          switch (op) {
+            case '>=': if (!(left >= right)) return false; break;
+            case '<=': if (!(left <= right)) return false; break;
+            case '>':  if (!(left > right))  return false; break;
+            case '<':  if (!(left < right))  return false; break;
+            case '==': if (!(left === right)) return false; break;
+            default: return false;
+          }
+        } else {
+          // Bare variable — treat as boolean
+          const val = replacements[part];
+          if (val === undefined || !val) return false;
+        }
       }
-
-      return new Function(`return (${expr})`)();
+      return true;
     } catch {
       return false;
     }

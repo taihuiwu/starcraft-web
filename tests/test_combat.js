@@ -4,9 +4,26 @@
 
 import assert from 'node:assert/strict';
 import { ATTACK_TYPE, UNIT_SIZE, DAMAGE_TABLE } from '../src/shared/Constants.js';
+import CombatSystem from '../src/game/CombatSystem.js';
 
-// We test the damage formula directly since CombatSystem methods
-// are pure calculations that don't depend on GameManager internals
+// Create a CombatSystem instance with a mock gameManager
+const combat = new CombatSystem({});
+
+/**
+ * Wrapper matching original test signature for calculateDamage
+ */
+function calculateDamage(baseDamage, attackType, targetSize, armor) {
+  const attacker = { attack: { damage: baseDamage, type: attackType } };
+  const defender = { unitSize: targetSize, armor };
+  return combat.calculateDamage(attacker, defender);
+}
+
+/**
+ * Wrapper matching original test signature for applyDamage
+ */
+function applyDamage(target, damage, attackType = 'normal') {
+  return combat.applyDamage(target, damage, attackType);
+}
 
 let passed = 0;
 let failed = 0;
@@ -23,58 +40,7 @@ function test(name, fn) {
   }
 }
 
-/**
- * Replicate CombatSystem.calculateDamage logic for standalone testing
- */
-function calculateDamage(baseDamage, attackType, targetSize, armor) {
-  const multiplier = DAMAGE_TABLE[attackType]?.[targetSize] ?? 1.0;
-  let damage = baseDamage * multiplier;
-  damage = Math.max(0, damage - armor);
-
-  if (baseDamage * multiplier <= armor) {
-    damage = 0;
-  } else {
-    damage = Math.max(1, Math.floor(damage));
-  }
-  return damage;
-}
-
-/**
- * Replicate CombatSystem.applyDamage logic for standalone testing
- */
-function applyDamage(target, damage, attackType = 'normal') {
-  if (damage <= 0 || !target.alive) return false;
-
-  let remainingDamage = damage;
-
-  // Shield first
-  if (target.shield > 0) {
-    if (target.shield >= remainingDamage) {
-      target.shield -= remainingDamage;
-      remainingDamage = 0;
-    } else {
-      remainingDamage -= target.shield;
-      target.shield = 0;
-    }
-  }
-
-  // HP
-  if (remainingDamage > 0) {
-    target.hp -= remainingDamage;
-  }
-
-  // Death check
-  if (target.hp <= 0) {
-    target.hp = 0;
-    target.alive = false;
-    target.selected = false;
-    return true;
-  }
-
-  return false;
-}
-
-console.log('=== CombatSystem Tests ===\n');
+console.log('=== CombatSystem Tests ===\\n');
 
 // ── Normal攻击对三种体型 ─────────────────
 console.log('Normal attack (multiplier 1.0 for all):');

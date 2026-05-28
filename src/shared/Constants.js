@@ -154,4 +154,7 @@ export const EVENTS = {
   CAMERA_MOVE: 'camera:move',
   MINIMAP_CLICK: 'minimap:click',
   BUILD_PANEL_CLICK: 'ui:build_click',
+
+  // 渲染器事件
+  RENDERER_ERROR: 'renderer:error',
 };

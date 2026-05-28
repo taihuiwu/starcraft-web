@@ -1,1 +1,10 @@
 node_modules/
+dist/
+release/
+*.log
+.env
+.env.*
+.DS_Store
+coverage/
+.vscode/
+.idea/

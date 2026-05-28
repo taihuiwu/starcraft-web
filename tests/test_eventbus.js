@@ -3,72 +3,7 @@
 // ═══════════════════════════════════════════
 
 import assert from 'node:assert/strict';
-
-// Import the EventBus class (not the singleton)
-// We need to create our own instance for clean testing
-class EventBus {
-  constructor() {
-    this.listeners = new Map();
-    this.onceListeners = new Map();
-  }
-
-  on(event, callback) {
-    if (!this.listeners.has(event)) {
-      this.listeners.set(event, new Set());
-    }
-    this.listeners.get(event).add(callback);
-    return () => this.off(event, callback);
-  }
-
-  once(event, callback) {
-    if (!this.onceListeners.has(event)) {
-      this.onceListeners.set(event, new Set());
-    }
-    this.onceListeners.get(event).add(callback);
-  }
-
-  off(event, callback) {
-    const listeners = this.listeners.get(event);
-    if (listeners) listeners.delete(callback);
-    const once = this.onceListeners.get(event);
-    if (once) once.delete(callback);
-  }
-
-  emit(event, data) {
-    const listeners = this.listeners.get(event);
-    if (listeners) {
-      for (const cb of listeners) {
-        try {
-          cb(data);
-        } catch (err) {
-          console.error(`[EventBus] Error in listener for "${event}":`, err);
-        }
-      }
-    }
-
-    const once = this.onceListeners.get(event);
-    if (once) {
-      for (const cb of once) {
-        try {
-          cb(data);
-        } catch (err) {
-          console.error(`[EventBus] Error in once-listener for "${event}":`, err);
-        }
-      }
-      once.clear();
-    }
-  }
-
-  clear(event) {
-    this.listeners.delete(event);
-    this.onceListeners.delete(event);
-  }
-
-  clearAll() {
-    this.listeners.clear();
-    this.onceListeners.clear();
-  }
-}
+import { EventBus } from '../src/shared/EventBus.js';
 
 let passed = 0;
 let failed = 0;

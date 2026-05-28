@@ -57,12 +57,12 @@ npm install
 npm run dev
 ```
 
-浏览器访问 **http://localhost:5173**，选择种族即可开始游戏。
+浏览器访问 **http://localhost:3000**，选择种族即可开始游戏。
 
 ### 联机服务器
 
 ```bash
-# 启动游戏服务器（端口 8080）
+# 启动游戏服务器（端口 3001）
 npm run server
 
 # 开发模式（自动重载）
@@ -115,7 +115,7 @@ npm run electron:build:all
 └─────────────────────────────────────────────────────────────┘
            ↕ WebSocket ↕
 ┌─────────────────────────────────────────────────────────────┐
-│              Node.js Game Server (Port 8080)                │
+│              Node.js Game Server (Port 3001)                │
 │       Protocol / RoomManager / GameSync / NetworkPlayer     │
 └─────────────────────────────────────────────────────────────┘
 ```
