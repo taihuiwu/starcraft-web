@@ -17,6 +17,13 @@ export const EDITOR_TOOL = {
   SELECT: 'select',
 };
 
+// ── 对称模式 ──
+export const SYMMETRY_MODE = {
+  NONE: 'none',
+  VERTICAL: 'vertical',   // 垂直镜像（左右对称，轴在 X 中线）
+  HORIZONTAL: 'horizontal', // 水平镜像（上下对称，轴在 Z 中线）
+};
+
 /**
  * MapEditor - 地图编辑器核心逻辑
  * 管理画布渲染、编辑工具、撤销/重做、保存/加载
@@ -50,12 +57,25 @@ export class MapEditor {
     this.brushSize = 2;    // 笔刷半径
     this.selectedTeam = 1;
 
+    // ── 对称绘制 ──
+    this.symmetryMode = SYMMETRY_MODE.NONE;
+
     // ── 拖拽状态 ──
     this.isDragging = false;
     this.dragStartX = 0;
     this.dragStartZ = 0;
     this.lastMouseGridX = -1;
     this.lastMouseGridZ = -1;
+
+    // ── 选区状态 ──
+    this.selection = null;       // { x1, z1, x2, z2 }  归一化为 x1<=x2, z1<=z2
+    this.selectionStart = null;  // 拖拽起始格坐标
+    this.isSelecting = false;    // 正在框选
+    this.isMovingSelection = false; // 正在移动选区内容
+    this.moveSelectionOffset = { x: 0, z: 0 }; // 移动偏移
+
+    // ── 剪贴板 ──
+    this.clipboard = null; // { terrainData, heightData, width, height }
 
     // ── 撤销/重做 ──
     this.undoStack = [];
@@ -256,6 +276,328 @@ export class MapEditor {
     this.canvas.addEventListener('contextmenu', this._onContextMenu);
   }
 
+  // ═══════════════════════════════════════
+  // 对称绘制
+  // ═══════════════════════════════════════
+
+  /**
+   * 设置对称模式
+   * @param {string} mode - SYMMETRY_MODE枚举值
+   */
+  setSymmetryMode(mode) {
+    this.symmetryMode = mode;
+    this.markDirty();
+  }
+
+  /**
+   * 根据对称模式获取镜像坐标
+   * @param {number} gx - 原始X坐标
+   * @param {number} gz - 原始Z坐标
+   * @returns {{ x: number, z: number }|null} 镜像坐标，如不需要镜像返回null
+   */
+  _getMirrorCoord(gx, gz) {
+    if (this.symmetryMode === SYMMETRY_MODE.VERTICAL) {
+      const axis = this.mapData.width / 2;
+      const mx = Math.floor(2 * axis - gx - 1);
+      if (mx === gx) return null; // 在轴上，不需要重复
+      if (mx >= 0 && mx < this.mapData.width) {
+        return { x: mx, z: gz };
+      }
+    } else if (this.symmetryMode === SYMMETRY_MODE.HORIZONTAL) {
+      const axis = this.mapData.height / 2;
+      const mz = Math.floor(2 * axis - gz - 1);
+      if (mz === gz) return null;
+      if (mz >= 0 && mz < this.mapData.height) {
+        return { x: gx, z: mz };
+      }
+    }
+    return null;
+  }
+
+  // ═══════════════════════════════════════
+  // 选区操作
+  // ═══════════════════════════════════════
+
+  /**
+   * 清除选区
+   */
+  clearSelection() {
+    this.selection = null;
+    this.selectionStart = null;
+    this.isSelecting = false;
+    this.isMovingSelection = false;
+    this.markDirty();
+  }
+
+  /**
+   * 获取选区范围（归一化）
+   * @returns {{ x1, z1, x2, z2, width, height }|null}
+   */
+  getSelectionRect() {
+    if (!this.selection) return null;
+    const x1 = Math.max(0, Math.min(this.selection.x1, this.selection.x2));
+    const z1 = Math.max(0, Math.min(this.selection.z1, this.selection.z2));
+    const x2 = Math.min(this.mapData.width - 1, Math.max(this.selection.x1, this.selection.x2));
+    const z2 = Math.min(this.mapData.height - 1, Math.max(this.selection.z1, this.selection.z2));
+    return {
+      x1, z1, x2, z2,
+      width: x2 - x1 + 1,
+      height: z2 - z1 + 1,
+    };
+  }
+
+  /**
+   * 复制选区内容到剪贴板
+   * @returns {boolean} 是否成功
+   */
+  copySelection() {
+    const rect = this.getSelectionRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+
+    const terrainData = [];
+    const heightData = [];
+    for (let dz = 0; dz < rect.height; dz++) {
+      const tRow = [];
+      const hRow = [];
+      for (let dx = 0; dx < rect.width; dx++) {
+        tRow.push(this.mapData.getTerrain(rect.x1 + dx, rect.z1 + dz));
+        hRow.push(this.mapData.getHeight(rect.x1 + dx, rect.z1 + dz));
+      }
+      terrainData.push(tRow);
+      heightData.push(hRow);
+    }
+
+    this.clipboard = {
+      terrainData,
+      heightData,
+      width: rect.width,
+      height: rect.height,
+      sourceX: rect.x1,
+      sourceZ: rect.z1,
+    };
+    return true;
+  }
+
+  /**
+   * 将剪贴板内容粘贴到指定位置
+   * @param {number} destX - 目标左上角X
+   * @param {number} destZ - 目标左上角Z
+   * @param {boolean} [clearSource=false] - 是否清空源区域（剪切效果）
+   * @returns {boolean} 是否成功
+   */
+  pasteClipboard(destX, destZ, clearSource = false) {
+    if (!this.clipboard) return false;
+    this.pushUndo();
+
+    const { terrainData, heightData, width, height, sourceX, sourceZ } = this.clipboard;
+
+    // 清空源区域（剪切效果）
+    if (clearSource) {
+      for (let dz = 0; dz < height; dz++) {
+        for (let dx = 0; dx < width; dx++) {
+          const sx = sourceX + dx;
+          const sz = sourceZ + dz;
+          if (sx < this.mapData.width && sz < this.mapData.height) {
+            this.mapData.setTerrain(sx, sz, TERRAIN.GRASS);
+            this.mapData.setHeight(sx, sz, 0);
+          }
+        }
+      }
+    }
+
+    // 粘贴到新位置
+    for (let dz = 0; dz < height; dz++) {
+      for (let dx = 0; dx < width; dx++) {
+        const tx = destX + dx;
+        const tz = destZ + dz;
+        if (tx >= 0 && tx < this.mapData.width && tz >= 0 && tz < this.mapData.height) {
+          this.mapData.setTerrain(tx, tz, terrainData[dz][dx]);
+          this.mapData.setHeight(tx, tz, heightData[dz][dx]);
+        }
+      }
+    }
+
+    this.markDirty();
+    this.onMapChange(this.mapData);
+    return true;
+  }
+
+  /**
+   * 移动选区内容（拖拽过程中实时移动）
+   * @param {number} offsetX - X偏移格数
+   * @param {number} offsetZ - Z偏移格数
+   */
+  moveSelectionBy(offsetX, offsetZ) {
+    const rect = this.getSelectionRect();
+    if (!rect) return;
+
+    this.pushUndo();
+
+    // 1. 读取原选区数据
+    const terrainData = [];
+    const heightData = [];
+    for (let dz = 0; dz < rect.height; dz++) {
+      const tRow = [];
+      const hRow = [];
+      for (let dx = 0; dx < rect.width; dx++) {
+        tRow.push(this.mapData.getTerrain(rect.x1 + dx, rect.z1 + dz));
+        hRow.push(this.mapData.getHeight(rect.x1 + dx, rect.z1 + dz));
+      }
+      terrainData.push(tRow);
+      heightData.push(hRow);
+    }
+
+    // 2. 清空原区域
+    for (let dz = 0; dz < rect.height; dz++) {
+      for (let dx = 0; dx < rect.width; dx++) {
+        const sx = rect.x1 + dx;
+        const sz = rect.z1 + dz;
+        if (sx < this.mapData.width && sz < this.mapData.height) {
+          this.mapData.setTerrain(sx, sz, TERRAIN.GRASS);
+          this.mapData.setHeight(sx, sz, 0);
+        }
+      }
+    }
+
+    // 3. 写入新位置
+    const newX1 = rect.x1 + offsetX;
+    const newZ1 = rect.z1 + offsetZ;
+    for (let dz = 0; dz < rect.height; dz++) {
+      for (let dx = 0; dx < rect.width; dx++) {
+        const tx = newX1 + dx;
+        const tz = newZ1 + dz;
+        if (tx >= 0 && tx < this.mapData.width && tz >= 0 && tz < this.mapData.height) {
+          this.mapData.setTerrain(tx, tz, terrainData[dz][dx]);
+          this.mapData.setHeight(tx, tz, heightData[dz][dx]);
+        }
+      }
+    }
+
+    // 4. 更新选区位置
+    this.selection = { x1: newX1, z1: newZ1, x2: newX1 + rect.width - 1, z2: newZ1 + rect.height - 1 };
+
+    this.markDirty();
+    this.onMapChange(this.mapData);
+  }
+
+  // ═══════════════════════════════════════
+  // 地形全局替换
+  // ═══════════════════════════════════════
+
+  /**
+   * 全局替换地形类型
+   * @param {number} fromType - 要替换的TERRAIN类型
+   * @param {number} toType - 替换为的TERRAIN类型
+   * @returns {number} 替换的格数
+   */
+  replaceTerrain(fromType, toType) {
+    this.pushUndo();
+    let count = 0;
+    for (let gz = 0; gz < this.mapData.height; gz++) {
+      for (let gx = 0; gx < this.mapData.width; gx++) {
+        if (this.mapData.terrain[gz][gx] === fromType) {
+          this.mapData.terrain[gz][gx] = toType;
+          count++;
+        }
+      }
+    }
+    this.markDirty();
+    this.onMapChange(this.mapData);
+    return count;
+  }
+
+  /**
+   * 在选区内替换地形类型
+   * @param {number} fromType
+   * @param {number} toType
+   * @returns {number} 替换的格数
+   */
+  replaceTerrainInSelection(fromType, toType) {
+    const rect = this.getSelectionRect();
+    if (!rect) return 0;
+    this.pushUndo();
+    let count = 0;
+    for (let dz = 0; dz < rect.height; dz++) {
+      for (let dx = 0; dx < rect.width; dx++) {
+        const gx = rect.x1 + dx;
+        const gz = rect.z1 + dz;
+        if (this.mapData.terrain[gz][gx] === fromType) {
+          this.mapData.terrain[gz][gx] = toType;
+          count++;
+        }
+      }
+    }
+    this.markDirty();
+    this.onMapChange(this.mapData);
+    return count;
+  }
+
+  // ═══════════════════════════════════════
+  // 地图缩略图导出
+  // ═══════════════════════════════════════
+
+  /**
+   * 将整个地图渲染到一个离线Canvas并导出为PNG data URL
+   * @param {number} [thumbWidth=256] - 缩略图宽度像素
+   * @returns {string} data:image/png;base64 URL
+   */
+  exportThumbnail(thumbWidth = 256) {
+    const W = this.mapData.width;
+    const H = this.mapData.height;
+    const scale = thumbWidth / W;
+    const thumbHeight = Math.floor(H * scale);
+
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = thumbWidth;
+    offCanvas.height = thumbHeight;
+    const offCtx = offCanvas.getContext('2d');
+
+    // 逐格绘制地形
+    for (let gz = 0; gz < H; gz++) {
+      for (let gx = 0; gx < W; gx++) {
+        const terrain = this.mapData.getTerrain(gx, gz);
+        const height = this.mapData.getHeight(gx, gz);
+        offCtx.fillStyle = TERRAIN_PROPS[terrain]?.color || '#333';
+        if (height > 0) {
+          offCtx.globalAlpha = 0.7 + height * 0.3;
+        } else {
+          offCtx.globalAlpha = 1.0;
+        }
+        offCtx.fillRect(gx * scale, gz * scale, scale + 0.5, scale + 0.5);
+      }
+    }
+    offCtx.globalAlpha = 1.0;
+
+    // 绘制资源点
+    for (const rn of this.mapData.resourceNodes) {
+      offCtx.fillStyle = rn.type === RESOURCE_TYPE.MINERAL ? '#4488ff' : '#44aa44';
+      offCtx.fillRect(rn.x * scale - 1, rn.z * scale - 1, 3, 3);
+    }
+
+    // 绘制出生点
+    for (const sp of this.mapData.spawnPoints) {
+      offCtx.fillStyle = sp.team === 1 ? '#0066ff' : '#ff3333';
+      offCtx.beginPath();
+      offCtx.arc(sp.x * scale, sp.z * scale, 3, 0, Math.PI * 2);
+      offCtx.fill();
+    }
+
+    return offCanvas.toDataURL('image/png');
+  }
+
+  /**
+   * 下载地图缩略图为PNG文件（浏览器环境）
+   * @param {string} [filename]
+   * @param {number} [thumbWidth=256]
+   */
+  downloadThumbnail(filename, thumbWidth = 256) {
+    const dataURL = this.exportThumbnail(thumbWidth);
+    const a = document.createElement('a');
+    a.href = dataURL;
+    a.download = filename || `${this.mapData.name}_thumbnail.png`;
+    a.click();
+  }
+
   _unbindEvents() {
     this.canvas.removeEventListener('mousedown', this._onMouseDown);
     this.canvas.removeEventListener('mousemove', this._onMouseMove);
@@ -278,8 +620,27 @@ export class MapEditor {
       const grid = this.screenToGrid(e.clientX, e.clientY);
       if (!grid) return;
 
-      this.pushUndo();
-      this._applyTool(grid.x, grid.z);
+      if (this.currentTool === EDITOR_TOOL.SELECT) {
+        // 选区模式：检查是否点击在已有选区内部 → 拖拽移动
+        if (this.selection) {
+          const rect = this.getSelectionRect();
+          if (rect && grid.x >= rect.x1 && grid.x <= rect.x2 && grid.z >= rect.z1 && grid.z <= rect.z2) {
+            this.isMovingSelection = true;
+            this.selectionStart = { x: grid.x, z: grid.z };
+            this.moveSelectionOffset = { x: 0, z: 0 };
+            return;
+          }
+        }
+        // 否则开始框选
+        this.clearSelection();
+        this.isSelecting = true;
+        this.selectionStart = { x: grid.x, z: grid.z };
+        this.selection = { x1: grid.x, z1: grid.z, x2: grid.x, z2: grid.z };
+        this.markDirty();
+      } else {
+        this.pushUndo();
+        this._applyTool(grid.x, grid.z);
+      }
     }
   }
 
@@ -297,6 +658,27 @@ export class MapEditor {
     }
 
     const grid = this.screenToGrid(e.clientX, e.clientY);
+
+    // 选区拖拽（框选过程）
+    if (this.isSelecting && grid) {
+      this.selection.x2 = grid.x;
+      this.selection.z2 = grid.z;
+      this.markDirty();
+    }
+
+    // 移动选区内容
+    if (this.isMovingSelection && grid) {
+      const dx = grid.x - this.selectionStart.x;
+      const dz = grid.z - this.selectionStart.z;
+      if (dx !== this.moveSelectionOffset.x || dz !== this.moveSelectionOffset.z) {
+        this.moveSelectionOffset = { x: dx, z: dz };
+        // 先撤销上一步移动，再执行新的移动
+        this.undo();
+        this.moveSelectionBy(dx, dz);
+      }
+      this.markDirty();
+    }
+
     if (grid && (grid.x !== this.lastMouseGridX || grid.z !== this.lastMouseGridZ)) {
       this.lastMouseGridX = grid.x;
       this.lastMouseGridZ = grid.z;
@@ -304,7 +686,7 @@ export class MapEditor {
     }
 
     // 左键拖拽时持续绘制
-    if (e.buttons === 1) {
+    if (e.buttons === 1 && this.currentTool !== EDITOR_TOOL.SELECT) {
       if (grid) {
         this._applyTool(grid.x, grid.z);
       }
@@ -312,6 +694,10 @@ export class MapEditor {
   }
 
   _handleMouseUp(e) {
+    if (this.isMovingSelection) {
+      this.isMovingSelection = false;
+    }
+    this.isSelecting = false;
     this.isDragging = false;
   }
 
@@ -374,6 +760,19 @@ export class MapEditor {
   // ═══════════════════════════════════════
 
   _applyTool(gx, gz) {
+    // 对称绘制：在应用工具后，对镜像坐标也执行相同操作
+    this._applyToolAt(gx, gz);
+    const mirror = this._getMirrorCoord(gx, gz);
+    if (mirror) {
+      this._applyToolAt(mirror.x, mirror.z);
+    }
+  }
+
+  /**
+   * 在指定坐标应用当前工具（不含对称逻辑）
+   * @private
+   */
+  _applyToolAt(gx, gz) {
     switch (this.currentTool) {
       case EDITOR_TOOL.TERRAIN_PAINT:
         this.mapData.paintTerrain(gx, gz, this.brushSize, this.currentTerrainType);
@@ -564,6 +963,56 @@ export class MapEditor {
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1;
       ctx.strokeRect(screen.x + tileSize * 0.1, screen.y + tileSize * 0.1, tileSize * 0.8, tileSize * 0.8);
+    }
+
+    // ── 绘制选区 ──
+    if (this.selection) {
+      const rect = this.getSelectionRect();
+      if (rect) {
+        const topLeft = this.gridToScreen(rect.x1, rect.z1);
+        const sz = rect.width * tileSize;
+        const sh = rect.height * tileSize;
+        // 半透明填充
+        ctx.fillStyle = 'rgba(100, 180, 255, 0.15)';
+        ctx.fillRect(topLeft.x, topLeft.y, sz, sh);
+        // 虚线边框
+        ctx.strokeStyle = 'rgba(100, 180, 255, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(topLeft.x, topLeft.y, sz, sh);
+        ctx.setLineDash([]);
+        // 尺寸标注
+        ctx.fillStyle = 'rgba(100, 180, 255, 0.9)';
+        ctx.font = `${Math.max(10, Math.floor(tileSize * 0.35))}px Arial`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(`${rect.width}×${rect.height}`, topLeft.x + 2, topLeft.y - 2);
+      }
+    }
+
+    // ── 对称轴指示线 ──
+    if (this.symmetryMode === SYMMETRY_MODE.VERTICAL) {
+      const axisX = this.mapData.width / 2;
+      const screen = this.gridToScreen(axisX, startGz);
+      ctx.strokeStyle = 'rgba(255, 255, 100, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([8, 4]);
+      ctx.beginPath();
+      ctx.moveTo(screen.x, 0);
+      ctx.lineTo(screen.x, canvas.height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (this.symmetryMode === SYMMETRY_MODE.HORIZONTAL) {
+      const axisZ = this.mapData.height / 2;
+      const screen = this.gridToScreen(startGx, axisZ);
+      ctx.strokeStyle = 'rgba(255, 255, 100, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([8, 4]);
+      ctx.beginPath();
+      ctx.moveTo(0, screen.y);
+      ctx.lineTo(canvas.width, screen.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // ── 笔刷预览 ──

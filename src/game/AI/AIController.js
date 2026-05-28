@@ -7,6 +7,7 @@ import { RACE, AI_STATE, COMMAND } from '../../shared/Constants.js';
 import { distance2D, randomInt, randomFloat, effectiveHP } from '../../shared/MathUtils.js';
 import { eventBus } from '../../shared/EventBus.js';
 import { BuildOrderManager, ACTION_TYPE } from './BuildOrder.js';
+import { DropTactics } from './DropTactics.js';
 
 // ── 难度配置 ──
 const DIFFICULTY_CONFIG = {
@@ -92,6 +93,14 @@ export class AIController {
 
     // 初始化建造顺序
     this.buildOrderManager.selectOrder(this.difficulty);
+
+    // ── 空投/运输战术系统 ──
+    /** @type {DropTactics} 空投战术控制器 */
+    this.dropTactics = new DropTactics({
+      playerId: this.playerId,
+      race: this.race,
+      gameState: this.gameState,
+    });
   }
 
   // ═══════════════════════════════════════════
@@ -133,6 +142,11 @@ export class AIController {
 
     // 微操更新
     this._updateMicro(delta);
+
+    // 空投/运输战术更新
+    if (this.dropTactics) {
+      this.dropTactics.update(delta);
+    }
   }
 
   // ═══════════════════════════════════════════
@@ -508,15 +522,36 @@ export class AIController {
     if (this.expansionCount >= 3) return; // 最多4个基地
     if (snapshot.gameTime - this.lastExpansionTime < 60) return; // 60秒冷却
 
-    const shouldExpand = snapshot.minerals > 500 &&
-      snapshot.workers >= this.workerTarget * (this.expansionCount + 1) * 0.8 &&
-      snapshot.armyCount >= 15;
+    // ── 增强扩张策略：使用DropTactics的评分 ──
+    if (this.dropTactics && this.dropTactics.bestExpansionSite) {
+      const bestSite = this.dropTactics.bestExpansionSite;
+      // 最佳扩张点分数 > 50 且满足基本条件时扩张
+      const shouldExpand = bestSite.score > 50 &&
+        snapshot.minerals > 400 &&
+        snapshot.workers >= this.workerTarget * (this.expansionCount + 1) * 0.7 &&
+        snapshot.armyCount >= 12;
 
-    if (shouldExpand) {
-      this._issueExpandCommand();
-      this.expansionCount++;
-      this.lastExpansionTime = snapshot.gameTime;
-      this.state = AI_STATE.EXPAND;
+      if (shouldExpand) {
+        eventBus.emit('ai:expand', {
+          playerId: this.playerId,
+          target: bestSite.position,
+        });
+        this.expansionCount++;
+        this.lastExpansionTime = snapshot.gameTime;
+        this.state = AI_STATE.EXPAND;
+      }
+    } else {
+      // ── 回退到基础扩张逻辑 ──
+      const shouldExpand = snapshot.minerals > 500 &&
+        snapshot.workers >= this.workerTarget * (this.expansionCount + 1) * 0.8 &&
+        snapshot.armyCount >= 15;
+
+      if (shouldExpand) {
+        this._issueExpandCommand();
+        this.expansionCount++;
+        this.lastExpansionTime = snapshot.gameTime;
+        this.state = AI_STATE.EXPAND;
+      }
     }
   }
 
@@ -752,7 +787,7 @@ export class AIController {
    * 获取AI信息摘要（调试用）
    */
   getInfo() {
-    return {
+    const info = {
       playerId: this.playerId,
       race: this.race,
       difficulty: this.difficulty,
@@ -762,6 +797,11 @@ export class AIController {
       expansionCount: this.expansionCount,
       buildOrderProgress: this.buildOrderManager.currentIndex,
     };
+    // 包含空投战术信息
+    if (this.dropTactics) {
+      info.dropTactics = this.dropTactics.getInfo();
+    }
+    return info;
   }
 }
 

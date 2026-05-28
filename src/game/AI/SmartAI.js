@@ -6,6 +6,7 @@
 import { RACE, COMMAND, AI_STATE } from '../../shared/Constants.js';
 import { distance2D, effectiveHP } from '../../shared/MathUtils.js';
 import { eventBus } from '../../shared/EventBus.js';
+import { DropTactics } from './DropTactics.js';
 
 // ── AI 战略阶段 ──
 /** @enum {string} */
@@ -133,6 +134,9 @@ class ThreatAnalyzer {
     // 检测快攻威胁
     this._detectRushThreats(enemyUnits, gameState);
 
+    // 检测空投威胁（敌方运输机接近基地）
+    this._detectDropThreats(enemyUnits, myBuildings, myUnits);
+
     // 排序并限制数量
     this.threats.sort((a, b) => b.score - a.score);
     this.threats = this.threats.slice(0, 5);
@@ -159,7 +163,7 @@ class ThreatAnalyzer {
    * @returns {Threat[]}
    */
   getBaseThreats() {
-    return this.threats.filter(t => t.type === 'army' || t.type === 'rush');
+    return this.threats.filter(t => t.type === 'army' || t.type === 'rush' || t.type === 'drop');
   }
 
   /**
@@ -255,6 +259,44 @@ class ThreatAnalyzer {
         position: this._averagePosition(rushUnits),
         estimatedUnits: rushUnits.length,
       });
+    }
+  }
+
+  /**
+   * 检测空投威胁（敌方运输机接近我方基地）
+   * @private
+   */
+  _detectDropThreats(enemyUnits, myBuildings, myUnits) {
+    // 查找敌方运输机
+    const transports = enemyUnits.filter(u => {
+      if (!u.isFlying) return false;
+      const abilities = u.abilities || [];
+      return abilities.includes('load') ||
+             abilities.includes('unload') ||
+             abilities.includes('drop') ||
+             (u.cargo && u.cargo > 0);
+    });
+
+    if (transports.length === 0) return;
+
+    // 检查是否有运输机正在接近我方基地
+    const BASE_THREAT_RADIUS = 25;
+    for (const transport of transports) {
+      const nearBase = myBuildings.some(b =>
+        distance2D(transport.position, b.position) <= BASE_THREAT_RADIUS
+      );
+
+      if (nearBase) {
+        // 空投威胁：运输机载有部队接近基地
+        const score = 400 + transports.length * 100;
+        this.threats.push({
+          score,
+          level: this._scoreToLevel(score),
+          type: 'drop',
+          position: { ...transport.position },
+          estimatedUnits: (transport.cargo || 4), // 预估载员数
+        });
+      }
     }
   }
 
@@ -414,6 +456,14 @@ export class SmartAI {
     // 初始化策略
     this._updatePhase();
     this.currentPlan = this.planStrategy();
+
+    // ── 空投/运输战术系统 ──
+    /** @type {DropTactics} 空投战术控制器 */
+    this.dropTactics = new DropTactics({
+      playerId: this.playerId,
+      race: this.race,
+      gameState: this.gameState,
+    });
   }
 
   // ═══════════════════════════════════════════
@@ -446,6 +496,11 @@ export class SmartAI {
     if (this.tacticsTimer >= this.tacticsInterval) {
       this.tacticsTimer = 0;
       this.executeTactics();
+
+      // 空投/运输战术更新
+      if (this.dropTactics) {
+        this.dropTactics.update(this.tacticsInterval);
+      }
     }
 
     // ── 第三层: 操作层（高频）──
@@ -779,6 +834,16 @@ export class SmartAI {
   _executeAggressiveTactics(snapshot) {
     if (this.attackCooldown > 0) return;
 
+    // 进攻态势下，空投可以作为侧翼骚扰手段
+    // 当主力部队从正面进攻时，空投可以攻击敌方后方矿区
+    if (this.dropTactics && this.dropTactics.dropPhase === 'idle' && this.attackCooldown <= 0) {
+      const gameTime = snapshot.gameTime || 0;
+      if (gameTime > 420) {
+        // 游戏7分钟后，进攻态势下也允许空投
+        // DropTactics会在自己的update中处理具体逻辑
+      }
+    }
+
     if (this.attackGroup.length === 0) {
       this.attackGroup = this._selectAttackForce(snapshot);
       this.attackTarget = this.currentPlan?.attackTarget || this._selectAttackTarget(snapshot);
@@ -840,6 +905,15 @@ export class SmartAI {
     // 根据威胁分析结果决定
     if (this.threatLevel !== THREAT_LEVEL.NONE) {
       this._executeDefensiveTactics(snapshot);
+    }
+
+    // 均衡策略下也可以空投骚扰
+    if (this.dropTactics && this.dropTactics.dropPhase === 'idle') {
+      const gameTime = snapshot.gameTime || 0;
+      if (gameTime > 300 && this.threatLevel !== THREAT_LEVEL.CRITICAL) {
+        // 空投战术会在 DropTactics.update() 中自动评估
+        // 这里只提供额外的策略提示：在均衡态势下鼓励空投
+      }
     }
   }
 
@@ -1231,8 +1305,23 @@ export class SmartAI {
    */
   _manageExpansion(snapshot) {
     if (snapshot.gameTime - this.lastExpansionTime < 60) return;
-    eventBus.emit('ai:expand', { playerId: this.playerId });
-    this.lastExpansionTime = snapshot.gameTime;
+
+    // 使用DropTactics的增强扩张评分
+    if (this.dropTactics && this.dropTactics.bestExpansionSite) {
+      const bestSite = this.dropTactics.bestExpansionSite;
+      // 如果最佳扩张点分数足够高（>50），则执行扩张
+      if (bestSite.score > 50) {
+        eventBus.emit('ai:expand', {
+          playerId: this.playerId,
+          target: bestSite.position,
+        });
+        this.lastExpansionTime = snapshot.gameTime;
+      }
+    } else {
+      // 回退到基础扩张逻辑
+      eventBus.emit('ai:expand', { playerId: this.playerId });
+      this.lastExpansionTime = snapshot.gameTime;
+    }
   }
 
   /**
@@ -1256,7 +1345,7 @@ export class SmartAI {
    * @returns {object}
    */
   getInfo() {
-    return {
+    const info = {
       playerId: this.playerId,
       race: this.race,
       phase: this.currentPhase,
@@ -1266,6 +1355,11 @@ export class SmartAI {
       armyComposition: { ...this.armyComposition },
       state: this.state,
     };
+    // 包含空投战术信息
+    if (this.dropTactics) {
+      info.dropTactics = this.dropTactics.getInfo();
+    }
+    return info;
   }
 }
 

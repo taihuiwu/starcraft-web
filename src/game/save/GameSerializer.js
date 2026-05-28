@@ -11,6 +11,20 @@
 const SAVE_VERSION = 2;
 
 /**
+ * 最低支持的存档版本（低于此版本的数据无法恢复）
+ */
+const MIN_SUPPORTED_VERSION = 1;
+
+/**
+ * 存档数据校验规则
+ */
+const SAVE_SCHEMA = {
+  requiredFields: ['version', 'gameTime', 'playerRace'],
+  arrayFields: { units: 'id', buildings: 'id' },
+  numericFields: ['version', 'gameTime', 'nextUnitId'],
+};
+
+/**
  * 支持版本升级的迁移函数映射
  * key: 旧版本号, value: 升级函数（将旧格式转为新格式）
  */
@@ -28,6 +42,38 @@ const MIGRATIONS = {
   },
 };
 
+/**
+ * 向后兼容的默认值映射
+ * 当存档缺少某些字段时，使用这些默认值填充
+ */
+const FIELD_DEFAULTS = {
+  shield: 0,
+  maxShield: 0,
+  armor: 0,
+  attackCooldown: 0,
+  selected: false,
+  speed: 2,
+  facing: 0,
+  animState: 'idle',
+  commandQueue: [],
+  currentCommand: null,
+  targetPosition: null,
+  buildProgress: 0,
+  isComplete: false,
+  isBuilding: false,
+  requiresCreep: false,
+  hasCreep: false,
+};
+
+/**
+ * 压缩存档配置
+ */
+const COMPRESSION_CONFIG = {
+  enabled: true,
+  threshold: 512, // 字节，低于此值不压缩
+  method: 'lz-string', // 压缩算法
+};
+
 export default class GameSerializer {
   constructor() {
     /**
@@ -38,6 +84,9 @@ export default class GameSerializer {
 
     /** @type {boolean} 是否启用增量存档 */
     this.enableDelta = true;
+
+    /** @type {boolean} 是否启用压缩 */
+    this.enableCompression = COMPRESSION_CONFIG.enabled;
   }
 
   // ═══════════════════════════════════════
@@ -253,6 +302,21 @@ export default class GameSerializer {
   deserialize(json, gameManager) {
     try {
       let saveData = JSON.parse(json);
+
+      // 尝试解压缩（如果数据被压缩过）
+      const decompressed = this._tryDecompress(json);
+      if (decompressed !== json) {
+        saveData = JSON.parse(decompressed);
+      } else {
+        // JSON.parse 已在上面执行
+      }
+
+      // 校验存档数据基本结构
+      const validation = this.validateSaveData(saveData);
+      if (!validation.valid) {
+        console.warn('[GameSerializer] 存档数据校验警告:', validation.errors);
+        saveData = this._applyFieldDefaults(saveData);
+      }
 
       // 版本兼容处理
       saveData = this._migrateVersion(saveData);
@@ -546,8 +610,19 @@ export default class GameSerializer {
    * @returns {Object} 迁移后的数据
    */
   _migrateVersion(saveData) {
-    const version = saveData.version || 1;
+    const version = (saveData.version !== undefined && saveData.version !== null) ? saveData.version : 1;
     if (version === SAVE_VERSION) return saveData;
+    // 版本范围检查
+    if (version > SAVE_VERSION) {
+      console.warn(`[GameSerializer] 存档版本(${version})高于当前版本(${SAVE_VERSION})，尝试兼容加载`);
+      saveData._futureVersion = true;
+      return this._applyFieldDefaults(saveData);
+    }
+
+    if (version < MIN_SUPPORTED_VERSION) {
+      console.error(`[GameSerializer] 存档版本(${version})低于最低支持版本(${MIN_SUPPORTED_VERSION})，无法加载`);
+      throw new Error(`存档版本过低: v${version}，最低需要v${MIN_SUPPORTED_VERSION}`);
+    }
 
     console.log(`[GameSerializer] 存档版本: ${version}，正在迁移到: ${SAVE_VERSION}`);
 
@@ -555,10 +630,239 @@ export default class GameSerializer {
     // 逐版本升级
     for (let v = version; v < SAVE_VERSION; v++) {
       if (MIGRATIONS[v]) {
-        migrated = MIGRATIONS[v](migrated);
+        try {
+          migrated = MIGRATIONS[v](migrated);
+        } catch (err) {
+          console.error(`[GameSerializer] v${v} → v${v + 1} 迁移失败:`, err);
+          migrated = this._applyFieldDefaults(migrated);
+          migrated.version = v + 1;
+        }
         console.log(`[GameSerializer] 已从 v${v} 迁移到 v${v + 1}`);
       }
     }
     return migrated;
+  }
+
+  // ═══════════════════════════════════════
+  // 存档校验与修复
+  // ═══════════════════════════════════════
+
+  /**
+   * 校验存档数据结构是否合法
+   * @param {Object} saveData - 解析后的存档数据
+   * @returns {{ valid: boolean, errors: string[] }} 校验结果
+   */
+  validateSaveData(saveData) {
+    const errors = [];
+
+    if (!saveData || typeof saveData !== 'object') {
+      return { valid: false, errors: ['存档数据不是有效的对象'] };
+    }
+
+    // 检查必需字段
+    for (const field of SAVE_SCHEMA.requiredFields) {
+      if (saveData[field] === undefined || saveData[field] === null) {
+        errors.push(`缺少必需字段: ${field}`);
+      }
+    }
+
+    // 检查数值字段类型
+    for (const field of SAVE_SCHEMA.numericFields) {
+      if (saveData[field] !== undefined && typeof saveData[field] !== 'number') {
+        const num = Number(saveData[field]);
+        if (!isNaN(num)) {
+          saveData[field] = num;
+        } else {
+          errors.push(`字段类型错误: ${field} 应为number`);
+        }
+      }
+    }
+
+    // 检查数组字段
+    for (const [field, idKey] of Object.entries(SAVE_SCHEMA.arrayFields)) {
+      if (saveData[field] !== undefined) {
+        if (!Array.isArray(saveData[field])) {
+          errors.push(`字段类型错误: ${field} 应为Array`);
+          saveData[field] = [];
+        } else {
+          const invalidItems = saveData[field].filter((item) => !item || item[idKey] === undefined);
+          if (invalidItems.length > 0) {
+            errors.push(`${field} 中有 ${invalidItems.length} 个无效元素`);
+            saveData[field] = saveData[field].filter((item) => item && item[idKey] !== undefined);
+          }
+        }
+      }
+    }
+
+    return { valid: errors.length === 0, errors };
+  }
+
+  /**
+   * 为存档数据中的缺失字段填充默认值
+   * @param {Object} saveData - 存档数据
+   * @returns {Object} 补全后的数据
+   */
+  _applyFieldDefaults(saveData) {
+    if (Array.isArray(saveData.units)) {
+      saveData.units = saveData.units.map((unit) => ({
+        ...Object.fromEntries(
+          Object.entries(FIELD_DEFAULTS).map(([k, v]) => [k, v])
+        ),
+        ...unit,
+      }));
+    }
+
+    if (Array.isArray(saveData.buildings)) {
+      saveData.buildings = saveData.buildings.map((building) => ({
+        ...Object.fromEntries(
+          Object.entries(FIELD_DEFAULTS).map(([k, v]) => [k, v])
+        ),
+        ...building,
+      }));
+    }
+
+    if (!saveData.version) saveData.version = SAVE_VERSION;
+    if (saveData.gameTime === undefined) saveData.gameTime = 0;
+    if (!saveData.playerRace) saveData.playerRace = 'terran';
+    if (!Array.isArray(saveData.units)) saveData.units = [];
+    if (!Array.isArray(saveData.buildings)) saveData.buildings = [];
+
+    return saveData;
+  }
+
+  // ═══════════════════════════════════════
+  // 压缩支持
+  // ═══════════════════════════════════════
+
+  /**
+   * 尝试解压缩数据（自动检测压缩格式）
+   * @param {string} data - 可能被压缩的数据
+   * @returns {string} 解压后的数据
+   */
+  _tryDecompress(data) {
+    if (!data) return data;
+
+    if (data.startsWith('SCZ:')) {
+      try {
+        const compressed = data.slice(4);
+        const decompressed = this._lzStringDecompress(compressed);
+        console.log(`[GameSerializer] 解压缩: ${(data.length / 1024).toFixed(1)}KB → ${(decompressed.length / 1024).toFixed(1)}KB`);
+        return decompressed;
+      } catch (err) {
+        console.warn('[GameSerializer] 解压缩失败，使用原始数据:', err);
+        return data;
+      }
+    }
+
+    return data;
+  }
+
+  /**
+   * 压缩存档数据
+   * @param {string} data - JSON字符串
+   * @returns {string} 压缩后的数据（带 "SCZ:" 前缀）
+   */
+  compress(data) {
+    if (!this.enableCompression || !data || data.length < COMPRESSION_CONFIG.threshold) {
+      return data;
+    }
+
+    try {
+      const compressed = this._lzStringCompress(data);
+      const result = 'SCZ:' + compressed;
+      console.log(`[GameSerializer] 压缩: ${(data.length / 1024).toFixed(1)}KB → ${(result.length / 1024).toFixed(1)}KB`);
+      return result;
+    } catch (err) {
+      console.warn('[GameSerializer] 压缩失败，使用原始数据:', err);
+      return data;
+    }
+  }
+
+  /**
+   * LZ-String压缩实现（纯JavaScript，无需外部依赖）
+   * @param {string} input
+   * @returns {string}
+   */
+  _lzStringCompress(input) {
+    if (input == null) return '';
+
+    // 简单压缩：将连续3个以上相同字符编码为计数+字符
+    let compressed = '';
+    let count = 1;
+    for (let idx = 1; idx <= input.length; idx++) {
+      if (idx < input.length && input.charCodeAt(idx) === input.charCodeAt(idx - 1)) {
+        count++;
+      } else {
+        if (count > 3) {
+          compressed += '\x00' + String.fromCharCode(count) + input[idx - 1];
+        } else {
+          for (let c = 0; c < count; c++) {
+            compressed += input[idx - 1];
+          }
+        }
+        count = 1;
+      }
+    }
+
+    // Base64编码
+    return btoa(unescape(encodeURIComponent(compressed)));
+  }
+
+  /**
+   * LZ-String解压缩实现
+   * @param {string} compressed
+   * @returns {string}
+   */
+  _lzStringDecompress(compressed) {
+    if (!compressed) return '';
+
+    const decoded = decodeURIComponent(escape(atob(compressed)));
+
+    let output = '';
+    let idx = 0;
+    while (idx < decoded.length) {
+      if (decoded.charCodeAt(idx) === 0) {
+        const count = decoded.charCodeAt(idx + 1);
+        const char = decoded.charCodeAt(idx + 2);
+        for (let c = 0; c < count; c++) {
+          output += String.fromCharCode(char);
+        }
+        idx += 3;
+      } else {
+        output += decoded[idx];
+        idx++;
+      }
+    }
+
+    return output;
+  }
+
+  /**
+   * 获取当前存档格式版本号
+   * @returns {number}
+   */
+  static getSaveVersion() {
+    return SAVE_VERSION;
+  }
+
+  /**
+   * 获取支持的最低版本号
+   * @returns {number}
+   */
+  static getMinSupportedVersion() {
+    return MIN_SUPPORTED_VERSION;
+  }
+
+  /**
+   * 检查存档版本是否可迁移
+   * @param {number} fromVersion
+   * @returns {boolean}
+   */
+  static canMigrate(fromVersion) {
+    if (fromVersion < MIN_SUPPORTED_VERSION || fromVersion > SAVE_VERSION) return false;
+    for (let v = fromVersion; v < SAVE_VERSION; v++) {
+      if (!MIGRATIONS[v]) return false;
+    }
+    return true;
   }
 }

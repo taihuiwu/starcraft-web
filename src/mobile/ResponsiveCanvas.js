@@ -220,11 +220,22 @@ export class ResponsiveCanvas {
 
   /**
    * 调整画布尺寸，应用当前画质等级
+   * 低端设备会主动降低 DPR 以保证流畅度
    */
   resize() {
     const info = this._deviceInfo;
     const preset = QUALITY_PRESETS[this._qualityLevel];
-    const pr = Math.min(preset.pixelRatio, info.pixelRatio);
+    let pr = Math.min(preset.pixelRatio, info.pixelRatio);
+
+    // 低端移动设备主动降 DPR 策略：
+    // 如果设备被检测为低端，强制 DPR 不超过 0.5（即使预设允许更高）
+    if (info.isLowEnd && info.isMobile) {
+      pr = Math.min(pr, 0.5);
+    }
+    // 中低端设备在高DPR屏幕上强制降级
+    if (info.isMobile && info.pixelRatio >= 3 && this._qualityLevel >= QUALITY_LEVEL.MEDIUM) {
+      pr = Math.min(pr, 0.75);
+    }
 
     const width = window.innerWidth;
     const height = window.innerHeight;
@@ -252,6 +263,60 @@ export class ResponsiveCanvas {
     if (level < QUALITY_LEVEL.ULTRA || level > QUALITY_LEVEL.POTATO) return;
     this._qualityLevel = level;
     this.resize();
+    // 通知监听器画质已变更
+    for (const cb of this._resizeCallbacks) {
+      try {
+        cb({
+          width: window.innerWidth,
+          height: window.innerHeight,
+          pixelRatio: this.getCurrentPixelRatio(),
+          quality: this._qualityLevel,
+          source: 'qualityChange',
+        });
+      } catch (err) {
+        console.error('[ResponsiveCanvas] Quality change callback error:', err);
+      }
+    }
+  }
+
+  /**
+   * 获取当前生效的像素比
+   * @returns {number}
+   */
+  getCurrentPixelRatio() {
+    const info = this._deviceInfo;
+    const preset = QUALITY_PRESETS[this._qualityLevel];
+    let pr = Math.min(preset.pixelRatio, info.pixelRatio);
+    if (info.isLowEnd && info.isMobile) pr = Math.min(pr, 0.5);
+    if (info.isMobile && info.pixelRatio >= 3 && this._qualityLevel >= QUALITY_LEVEL.MEDIUM) {
+      pr = Math.min(pr, 0.75);
+    }
+    return pr;
+  }
+
+  /**
+   * 连接 PerformanceMonitor 的自动降级机制
+   * 当 FPS 持续低下时自动降低画质等级
+   * @param {import('../engine/PerformanceMonitor.js').PerformanceMonitor} monitor
+   */
+  connectPerformanceMonitor(monitor) {
+    if (!monitor || typeof monitor.enableAutoDowngrade !== 'function') return;
+
+    monitor.setQualityLevel(this._qualityLevel);
+
+    monitor.enableAutoDowngrade((newLevel) => {
+      this.setQualityLevel(newLevel);
+    }, {
+      downgradeThresholdMs: 5000,
+      cooldownMs: 10000,
+    });
+
+    // 注册降级监听器用于事件通知
+    monitor.onDowngrade((newLevel) => {
+      console.info(`[ResponsiveCanvas] PerformanceMonitor 触发降级 → 等级 ${newLevel}`);
+    });
+
+    this._performanceMonitor = monitor;
   }
 
   /**
@@ -306,6 +371,11 @@ export class ResponsiveCanvas {
     if (this._memoryCheckInterval) clearInterval(this._memoryCheckInterval);
     if (this._resizeTimer) cancelAnimationFrame(this._resizeTimer);
     if (this._qualityRestoreTimer) clearTimeout(this._qualityRestoreTimer);
+    // 断开 PerformanceMonitor 连接
+    if (this._performanceMonitor && typeof this._performanceMonitor.disableAutoDowngrade === 'function') {
+      this._performanceMonitor.disableAutoDowngrade();
+    }
+    this._performanceMonitor = null;
     this._resizeCallbacks.length = 0;
   }
 }

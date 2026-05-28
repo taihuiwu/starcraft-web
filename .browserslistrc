@@ -1,0 +1,10 @@
+# StarCraft Web - 浏览器兼容性配置
+# 支持主流现代浏览器
+
+[build]
+Chrome >= 90
+Firefox >= 88
+Safari >= 14
+Edge >= 90
+ChromeAndroid >= 90
+iOS >= 14
