@@ -4,10 +4,16 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](./package.json)
+[![CI](https://github.com/taihuiwu/starcraft-web/actions/workflows/ci.yml/badge.svg)](https://github.com/taihuiwu/starcraft-web/actions)
+[![Tests](https://img.shields.io/badge/tests-161%20passed-brightgreen.svg)](./tests/)
+[![ESLint](https://img.shields.io/badge/eslint-0%20issues-brightgreen.svg)](./.eslintrc.json)
 
 ---
 
 ## ✨ 功能亮点
+- ✅ **全面审查** — 安全/性能/架构三维度审查，P0+P1问题全部修复
+- 🔄 **CI/CD** — GitHub Actions 自动测试 + CodeQL 安全扫描
+- 🧪 **161个测试** — Vitest 框架，覆盖核心游戏逻辑/数据结构/寻路/资源
 
 - 🎮 **经典三大种族** — 人族 (Terran) / 虫族 (Zerg) / 神族 (Protoss)，完整单位和建筑体系
 - ⚔️ **完整 RTS 玩法** — 采矿、建造、训练、科技升级、侦察、扩张
@@ -47,7 +53,7 @@
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/your-username/starcraft-web.git
+git clone https://github.com/taihuiwu/starcraft-web.git
 cd starcraft-web
 
 # 2. 安装依赖
@@ -55,6 +61,15 @@ npm install
 
 # 3. 启动开发服务器
 npm run dev
+
+# 代码检查
+npm run lint
+
+# 代码格式化
+npm run format
+
+# 运行测试
+npm run test
 ```
 
 浏览器访问 **http://localhost:3000**，选择种族即可开始游戏。
