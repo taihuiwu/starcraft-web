@@ -268,7 +268,7 @@ export class ResponsiveCanvas {
   /**
    * 销毁并清理事件监听
    */
-  destroy() {
+  dispose() {
     window.removeEventListener('resize', this._onWindowResize);
     window.removeEventListener('orientationchange', this._onOrientationChange);
     if (this._memoryCheckInterval) clearInterval(this._memoryCheckInterval);

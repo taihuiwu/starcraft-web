@@ -15,6 +15,7 @@ const SYNC_MSG = {
   RECONCILE: 'sync:reconcile',
   PING: 'sync:ping',
   PONG: 'sync:pong',
+  REQUEST_STATE: 'sync:request_state',
 };
 
 // ── 同步配置 ──
@@ -204,11 +205,20 @@ class SnapshotCompressor {
    * @private
    */
   _estimateSize(obj) {
-    try {
-      return JSON.stringify(obj).length;
-    } catch (_e) {
-      return 0;
+    // 快速估算: 对象约30字节/属性，数组约20字节/元素，字符串按长度
+    if (obj === null || obj === undefined) return 0;
+    if (typeof obj !== 'object') return String(obj).length;
+    if (Array.isArray(obj)) {
+      let sum = 2; // []
+      for (let i = 0; i < obj.length; i++) sum += this._estimateSize(obj[i]) + 1;
+      return sum;
     }
+    let sum = 2; // {}
+    const keys = Object.keys(obj);
+    for (let i = 0; i < keys.length; i++) {
+      sum += keys[i].length + 20 + this._estimateSize(obj[keys[i]]);
+    }
+    return sum;
   }
 
   /**
@@ -216,11 +226,29 @@ class SnapshotCompressor {
    * @private
    */
   _deepClone(obj) {
-    try {
-      return JSON.parse(JSON.stringify(obj));
-    } catch (_e) {
-      return obj;
+    if (typeof structuredClone === 'function') {
+      try { return structuredClone(obj); } catch (_e) { /* fall through */ }
     }
+    return this._fastClone(obj);
+  }
+
+  /**
+   * 快速递归深拷贝 - 跳过函数和循环引用
+   * @private
+   */
+  _fastClone(obj) {
+    if (obj === null || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) {
+      const arr = new Array(obj.length);
+      for (let i = 0; i < obj.length; i++) arr[i] = this._fastClone(obj[i]);
+      return arr;
+    }
+    const keys = Object.keys(obj);
+    const result = {};
+    for (let i = 0; i < keys.length; i++) {
+      result[keys[i]] = this._fastClone(obj[keys[i]]);
+    }
+    return result;
   }
 }
 
@@ -307,6 +335,26 @@ export class SyncManager {
     /** @type {number} Ping 发送时间 */
     this.lastPingTime = 0;
 
+    // ── 校验和缓存 ──
+    /** @private @type {object|null} 上次哈希的状态引用 */
+    this._lastChecksumState = null;
+    /** @private @type {number} 缓存的校验和 */
+    this._cachedChecksum = 0;
+
+    // ── 断线重连 ──
+    /** @private @type {boolean} 是否正在重连 */
+    this._reconnecting = false;
+    /** @private @type {number} 重连尝试次数 */
+    this._reconnectAttempts = 0;
+    /** @private @type {number} 最大重连次数 */
+    this._reconnectMaxAttempts = 10;
+    /** @private @type {number} 基础重连延迟 (ms) */
+    this._reconnectBaseDelay = 1000;
+    /** @private @type {number} 最大重连延迟 (ms) */
+    this._reconnectMaxDelay = 30000;
+    /** @private @type {number|null} 重连定时器 */
+    this._reconnectTimer = null;
+
     // ── 统计 ──
     /** @type {number} 预测命中次数 */
     this.predictionHits = 0;
@@ -321,6 +369,7 @@ export class SyncManager {
 
     // 注册 WebSocket 消息处理
     this._setupListeners();
+    this._setupReconnection();
   }
 
   // ═══════════════════════════════════════════
@@ -578,6 +627,13 @@ export class SyncManager {
         this._updateLatency(rtt);
       }
     });
+
+    // 服务器推送完整状态 (重连后)
+    this.wsClient.on(SYNC_MSG.SNAPSHOT, (data) => {
+      if (data && data.state && this._reconnecting) {
+        this._onReconnectSuccess();
+      }
+    });
   }
 
   /**
@@ -641,6 +697,116 @@ export class SyncManager {
   }
 
   // ═══════════════════════════════════════════
+  // 断线重连
+  // ═══════════════════════════════════════════
+
+  /**
+   * 设置 WebSocket 断线重连监听
+   * @private
+   */
+  _setupReconnection() {
+    if (!this.wsClient) return;
+
+    this.wsClient.on('close', () => {
+      this._scheduleReconnect();
+    });
+
+    this.wsClient.on('error', (_err) => {
+      // error 后通常紧跟 close，由 close 处理重连
+    });
+
+    this.wsClient.on('open', () => {
+      if (this._reconnecting) {
+        this._onReconnectSuccess();
+      }
+    });
+  }
+
+  /**
+   * 调度重连尝试 (指数退避)
+   * @private
+   */
+  _scheduleReconnect() {
+    if (this._reconnecting) return;
+    if (this._reconnectAttempts >= this._reconnectMaxAttempts) {
+      eventBus.emit('sync:reconnect_failed', {
+        attempts: this._reconnectAttempts,
+      });
+      return;
+    }
+
+    this._reconnecting = true;
+    const delay = Math.min(
+      this._reconnectBaseDelay * Math.pow(2, this._reconnectAttempts),
+      this._reconnectMaxDelay
+    );
+    this._reconnectAttempts++;
+
+    eventBus.emit('sync:reconnecting', {
+      attempt: this._reconnectAttempts,
+      maxAttempts: this._reconnectMaxAttempts,
+      delayMs: delay,
+    });
+
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      this._attemptReconnect();
+    }, delay);
+  }
+
+  /**
+   * 执行重连
+   * @private
+   */
+  _attemptReconnect() {
+    if (!this.wsClient) return;
+    try {
+      if (typeof this.wsClient.connect === 'function') {
+        this.wsClient.connect();
+      } else if (typeof this.wsClient.reconnect === 'function') {
+        this.wsClient.reconnect();
+      }
+    } catch (_e) {
+      // 连接失败，close 事件会再次触发 _scheduleReconnect
+    }
+  }
+
+  /**
+   * 重连成功后处理
+   * @private
+   */
+  _onReconnectSuccess() {
+    this._reconnecting = false;
+    this._reconnectAttempts = 0;
+    this._cachedChecksum = 0;
+    this._lastChecksumState = null;
+
+    // 请求完整状态快照
+    if (this.wsClient && this.wsClient.isConnected()) {
+      this.wsClient.send(SYNC_MSG.REQUEST_STATE, {
+        lastFrame: this.lastConfirmedFrame,
+        playerId: this.playerId,
+      });
+    }
+
+    eventBus.emit('sync:reconnected', {
+      frame: this.lastConfirmedFrame,
+    });
+  }
+
+  /**
+   * 取消进行中的重连
+   */
+  cancelReconnect() {
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this._reconnecting = false;
+    this._reconnectAttempts = 0;
+  }
+
+  // ═══════════════════════════════════════════
   // 辅助方法
   // ═══════════════════════════════════════════
 
@@ -682,14 +848,56 @@ export class SyncManager {
    */
   _computeChecksum(state) {
     try {
-      const str = JSON.stringify(state);
-      let hash = 0;
-      for (let i = 0; i < str.length; i++) {
-        const ch = str.charCodeAt(i);
-        hash = ((hash << 5) - hash) + ch;
-        hash = hash & hash; // 转为 32 位整数
+      // FNV-1a 增量哈希 - 仅在状态变化时重新计算
+      if (state === this._lastChecksumState) return this._cachedChecksum;
+      this._lastChecksumState = state;
+
+      const units = state.units || [];
+      const buildings = state.buildings || [];
+      const resources = state.resources || {};
+
+      let hash = 0x811c9dc5; // FNV offset basis
+      const FNV_PRIME = 0x01000193;
+
+      // 哈希单位
+      for (let i = 0; i < units.length; i++) {
+        const u = units[i];
+        hash ^= u.id;
+        hash = Math.imul(hash, FNV_PRIME);
+        hash ^= u.hp || 0;
+        hash = Math.imul(hash, FNV_PRIME);
+        const pos = u.position;
+        if (pos) {
+          hash ^= (pos.x * 1000 | 0);
+          hash = Math.imul(hash, FNV_PRIME);
+          hash ^= (pos.z * 1000 | 0);
+          hash = Math.imul(hash, FNV_PRIME);
+        }
       }
-      return hash;
+      // 哈希建筑
+      for (let i = 0; i < buildings.length; i++) {
+        const b = buildings[i];
+        hash ^= b.id;
+        hash = Math.imul(hash, FNV_PRIME);
+        hash ^= b.hp || 0;
+        hash = Math.imul(hash, FNV_PRIME);
+      }
+      // 哈希资源
+      const resKeys = Object.keys(resources);
+      for (let i = 0; i < resKeys.length; i++) {
+        for (let j = 0; j < resKeys[i].length; j++) {
+          hash ^= resKeys[i].charCodeAt(j);
+          hash = Math.imul(hash, FNV_PRIME);
+        }
+        hash ^= resources[resKeys[i]] || 0;
+        hash = Math.imul(hash, FNV_PRIME);
+      }
+      // 哈希游戏时间
+      hash ^= (state.gameTime * 1000 | 0);
+      hash = Math.imul(hash, FNV_PRIME);
+
+      this._cachedChecksum = hash | 0;
+      return this._cachedChecksum;
     } catch (_e) {
       return 0;
     }
@@ -714,8 +922,14 @@ export class SyncManager {
     let totalError = 0;
     let count = 0;
 
+    // 将 serverUnits 转为 Map 实现 O(n) 查找
+    const serverUnitMap = new Map();
+    for (let i = 0; i < serverUnits.length; i++) {
+      serverUnitMap.set(serverUnits[i].id, serverUnits[i]);
+    }
+
     for (const localUnit of localUnits) {
-      const serverUnit = serverUnits.find(u => u.id === localUnit.id);
+      const serverUnit = serverUnitMap.get(localUnit.id);
       if (serverUnit && localUnit.position && serverUnit.position) {
         const dx = (localUnit.position.x || 0) - (serverUnit.position.x || 0);
         const dz = (localUnit.position.z || 0) - (serverUnit.position.z || 0);
@@ -793,18 +1007,23 @@ export class SyncManager {
       latencyCompensation: this.getLatencyCompensation() + ' frames',
       compressionRatio: this.compressor.compressedCount + '/' +
         (this.compressor.compressedCount + this.compressor.fullCount),
+      reconnecting: this._reconnecting,
+      reconnectAttempts: this._reconnectAttempts,
     };
   }
 
   /**
    * 销毁同步管理器
    */
-  destroy() {
+  dispose() {
+    this.cancelReconnect();
     this.inputBuffer = [];
     this.inputDelayBuffer = [];
     this.frameSnapshots.clear();
     this.latencyBuffer = [];
     this.listeners.clear();
+    this._lastChecksumState = null;
+    this._cachedChecksum = 0;
   }
 }
 

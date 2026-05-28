@@ -119,7 +119,7 @@ class VirtualJoystick {
   show() { this.container.style.display = 'block'; }
   hide() { this.container.style.display = 'none'; this._reset(); }
 
-  destroy() {
+  dispose() {
     this.container.remove();
   }
 }
@@ -205,7 +205,7 @@ class ActionButtons {
   show() { this.container.style.display = 'flex'; }
   hide() { this.container.style.display = 'none'; }
 
-  destroy() {
+  dispose() {
     this.container.remove();
   }
 }
@@ -510,10 +510,10 @@ export class MobileControls {
   }
 
   /** 销毁并清理资源 */
-  destroy() {
+  dispose() {
     this.disable();
-    if (this._joystick) { this._joystick.destroy(); this._joystick = null; }
-    if (this._actionButtons) { this._actionButtons.destroy(); this._actionButtons = null; }
+    if (this._joystick) { this._joystick.dispose(); this._joystick = null; }
+    if (this._actionButtons) { this._actionButtons.dispose(); this._actionButtons = null; }
     this._onLongPress.length = 0;
     this._onAttack.length = 0;
   }

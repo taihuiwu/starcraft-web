@@ -51,10 +51,16 @@ export class WorkerManager {
     this._roundRobinIndex = 0;
 
     /**
-     * 是否已终止
-     * @type {boolean}
-     */
-    this._terminated = false;
+     /** @type {boolean}
+      * 是否已销毁
+      */
+     this._disposed = false;
+
+     /**
+      * 最后一次发送给 Worker 的游戏状态（用于 Worker 重启后恢复）
+      * @type {{ type: string, data: any } | null}
+      */
+     this._lastSentState = null;
 
     // 初始化 Worker 池
     this._initPool();
@@ -156,6 +162,9 @@ export class WorkerManager {
     } catch (_e) { /* 忽略 */ }
     this._createWorker(workerIndex);
 
+    // 恢复 Worker 状态：将最后已知的游戏状态发送给新 Worker
+    this._restoreState(workerIndex);
+
     this._processQueue();
   }
 
@@ -167,8 +176,8 @@ export class WorkerManager {
    */
   execute(task, data) {
     return new Promise((resolve, reject) => {
-      if (this._terminated) {
-        reject(new Error('[WorkerManager] WorkerManager 已终止'));
+      if (this._disposed) {
+        reject(new Error('[WorkerManager] WorkerManager 已销毁'));
         return;
       }
 
@@ -210,6 +219,9 @@ export class WorkerManager {
           workerIndex: idx,
         });
 
+        // 记录最后一次发送的状态（用于 Worker 重启恢复）
+        this._lastSentState = { type: taskEntry.type, data: taskEntry.data };
+
         // 发送消息给 Worker
         entry.worker.postMessage({
           type: taskEntry.type,
@@ -240,12 +252,12 @@ export class WorkerManager {
   }
 
   /**
-   * 终止所有 Worker 并清空队列
+   * 销毁所有 Worker 并清空队列
    */
-  terminate() {
-    this._terminated = true;
+  dispose() {
+    this._disposed = true;
 
-    // 终止所有 Worker
+    // 销毁所有 Worker
     for (let i = 0; i < this._workers.length; i++) {
       const entry = this._workers[i];
       if (entry && entry.worker) {
@@ -258,14 +270,14 @@ export class WorkerManager {
     // 拒绝所有待处理任务
     for (const task of this._taskQueue) {
       if (typeof task.errorCallback === 'function') {
-        task.errorCallback(new Error('[WorkerManager] WorkerManager 已终止'));
+        task.errorCallback(new Error('[WorkerManager] WorkerManager 已销毁'));
       }
     }
 
     // 拒绝所有活跃任务
     for (const [, task] of this._activeTasks) {
       if (typeof task.errorCallback === 'function') {
-        task.errorCallback(new Error('[WorkerManager] WorkerManager 已终止'));
+        task.errorCallback(new Error('[WorkerManager] WorkerManager 已销毁'));
       }
     }
 
@@ -308,6 +320,26 @@ export class WorkerManager {
       if (entry && !entry.busy) count++;
     }
     return count;
+  }
+
+  /**
+   * 将最后已知的游戏状态恢复到指定 Worker（Worker 重启后调用）
+   * @param {number} workerIndex - 新重启的 Worker 索引
+   * @private
+   */
+  _restoreState(workerIndex) {
+    if (!this._lastSentState) return;
+
+    const entry = this._workers[workerIndex];
+    if (!entry || !entry.worker) return;
+
+    try {
+      entry.worker.postMessage({
+        type: 'restore_state',
+        data: this._lastSentState.data,
+        taskId: -1, // 恢复消息不占用任务 ID
+      });
+    } catch (_e) { /* Worker 不可用时忽略 */ }
   }
 }
 

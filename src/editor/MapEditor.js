@@ -108,7 +108,7 @@ export class MapEditor {
   /**
    * 销毁编辑器
    */
-  destroy() {
+  dispose() {
     if (this._rafId) {
       cancelAnimationFrame(this._rafId);
     }

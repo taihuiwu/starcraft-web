@@ -290,7 +290,7 @@ class SlidePanel {
     return this.content;
   }
 
-  destroy() {
+  dispose() {
     this.container.remove();
   }
 }
@@ -466,8 +466,8 @@ export class TouchUI {
   }
 
   /** 销毁并清理 */
-  destroy() {
-    for (const [, p] of this._panels) p.destroy();
+  dispose() {
+    for (const [, p] of this._panels) p.dispose();
     this._panels.clear();
     if (this._hudRoot) this._hudRoot.remove();
   }

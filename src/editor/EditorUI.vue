@@ -394,7 +394,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown);
-  editor?.destroy();
+  editor?.dispose();
   editor = null;
 });
 </script>
